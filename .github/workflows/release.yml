@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create_release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-tauri:
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            args: '--target aarch64-apple-darwin'
+            target: aarch64-apple-darwin
+          - platform: 'macos-latest'
+            args: '--target x86_64-apple-darwin'
+            target: x86_64-apple-darwin
+          - platform: 'ubuntu-22.04'
+            args: ''
+            target: ''
+          - platform: 'windows-latest'
+            args: ''
+            target: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Node dependencies
+        run: pnpm install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAUR_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAUR_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAUR_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: ${{ matrix.args }}
+
+      - name: Upload to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: src-tauri/target/${{ matrix.target && format('release/{0}/bundle/' , matrix.target) || 'release/bundle' }}/*.exe
+          asset_name: MCDF-Marketplace-${{ matrix.platform }}.exe
+          asset_content_type: application/vnd.microsoft.portable-executable
+      - name: Upload macOS zip
+        if: matrix.platform == 'macos-latest'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          asset_name: MCDF-Marketplace-${{ matrix.target }}.dmg
+          asset_content_type: application/x-apple-diskimage
+      - name: Upload Linux .deb
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: src-tauri/target/release/bundle/deb/*.deb
+          asset_name: MCDF-Marketplace_amd64.deb
+          asset_content_type: application/vnd.debian.binary-package
