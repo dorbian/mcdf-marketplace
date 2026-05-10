@@ -1,0 +1,33 @@
+= Release Workflow
+
+The repository releases from `.github/workflows/release.yml`.
+
+== Push to `main`
+
+A push to `main` builds all configured Tauri targets first. If every build succeeds, the workflow creates a unique release tag:
+
+----
+v<package.json version>-build.<github run number>
+----
+
+Example:
+
+----
+v0.1.0-build.42
+----
+
+The automatically-created release is marked as a prerelease so regular `v*` tags can still be used for intentional stable releases.
+
+== Push a `v*` tag
+
+Pushing a tag such as `v0.1.1` builds the same targets and publishes a normal release using that tag. No extra tag is created.
+
+== pnpm version source
+
+The workflow does not specify a separate pnpm version. pnpm reads the version from `package.json`:
+
+----
+"packageManager": "pnpm@9.15.9"
+----
+
+This avoids the GitHub Actions error about multiple pnpm versions being specified.
