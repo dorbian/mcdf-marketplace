@@ -87,9 +87,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: src-tauri/target/release/bundle/**/*.exe
+          asset_path: src-tauri/target/release/mcdf-marketplace.exe
           asset_name: MCDF-Marketplace-windows.exe
           asset_content_type: application/vnd.microsoft.portable-executable
+      - name: Upload Windows MSI
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: src-tauri/target/release/bundle/msi/*.msi
+          asset_name: MCDF-Marketplace-windows.msi
+          asset_content_type: application/x-msi
       - name: Upload macOS dmg
         if: matrix.platform == 'macos-latest'
         uses: actions/upload-release-asset@v1
