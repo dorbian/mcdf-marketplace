@@ -74,7 +74,19 @@ impl MCDFParser {
     pub fn parse<R: Read>(reader: &mut R) -> Result<(MareCharaFileData, Vec<u8>), MCDFError> {
         // Read magic (4 bytes)
         let mut magic = [0u8; 4];
-        reader.read_exact(&mut magic)?;
+        let n = reader.read(&mut magic).map_err(|e| MCDFError { message: e.to_string() })?;
+        if n < 4 {
+            return Err(MCDFError { message: format!("File too small ({} bytes)", n) });
+        }
+
+        // Check for gzip magic (files may be gzipped)
+        if magic == [0x1f, 0x8b, 0x08, 0x00] || magic == [0x1f, 0x8b, 0x08, 0x08] {
+            return Err(MCDFError {
+                message: "File appears to be gzip-compressed. MCDF files should be decompressed before opening.".to_string(),
+            });
+        }
+
+
         if &magic != b"MCDF" {
             return Err(MCDFError {
                 message: format!(
