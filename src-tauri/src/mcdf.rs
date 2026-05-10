@@ -159,6 +159,7 @@ impl MCDFParser {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedFile {
     pub game_paths: Vec<String>,
     pub data: Vec<u8>,
