@@ -79,7 +79,7 @@ jobs:
           TAUR_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAUR_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: ${{ matrix.args }}
-          tag_name: ${{ github.ref_name }}
+          tagName: ${{ github.ref_name }}
 
       - name: Upload to Release
         uses: actions/upload-release-asset@v1
@@ -87,10 +87,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: src-tauri/target/${{ matrix.target && format('release/{0}/bundle/' , matrix.target) || 'release/bundle' }}/*.exe
-          asset_name: MCDF-Marketplace-${{ matrix.platform }}.exe
+          asset_path: src-tauri/target/release/bundle/**/*.exe
+          asset_name: MCDF-Marketplace-windows.exe
           asset_content_type: application/vnd.microsoft.portable-executable
-      - name: Upload macOS zip
+      - name: Upload macOS dmg
         if: matrix.platform == 'macos-latest'
         uses: actions/upload-release-asset@v1
         env:
