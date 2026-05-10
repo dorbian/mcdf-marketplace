@@ -1,33 +1,46 @@
 = Release Workflow
 
-The repository releases from `.github/workflows/release.yml`.
+The repository builds and releases the Tauri application from GitHub Actions.
 
-== Push to `main`
+== Push to main
 
-A push to `main` builds all configured Tauri targets first. If every build succeeds, the workflow creates a unique release tag:
+A push to `main` runs all configured platform builds first.
 
-----
-v<package.json version>-build.<github run number>
-----
+If every build succeeds, the workflow creates a build tag using the application version from `package.json`:
 
-Example:
-
+[source,text]
 ----
 v0.1.0-build.42
 ----
 
-The automatically-created release is marked as a prerelease so regular `v*` tags can still be used for intentional stable releases.
+The build number is the GitHub Actions run number.
 
-== Push a `v*` tag
+The generated release is marked as a prerelease because it came from `main` rather than an explicit version tag.
 
-Pushing a tag such as `v0.1.1` builds the same targets and publishes a normal release using that tag. No extra tag is created.
+== Version tags
 
-== pnpm version source
+Pushing a tag matching `v*` creates a normal release:
 
-The workflow does not specify a separate pnpm version. pnpm reads the version from `package.json`:
+[source,text]
+----
+v0.1.1
+----
 
+Tag releases are not marked as prereleases.
+
+== Asset publishing
+
+Each platform build uploads its Tauri bundle as an artifact. The publish job downloads those artifacts, packages each platform artifact into a zip, creates or updates the release, and uploads the zips with the workflow attempt number in the filename.
+
+This avoids the fragile release-asset delete/re-upload path that can fail with GitHub API `Not Found` errors.
+
+== pnpm version source of truth
+
+The pnpm version is defined only in `package.json`:
+
+[source,json]
 ----
 "packageManager": "pnpm@9.15.9"
 ----
 
-This avoids the GitHub Actions error about multiple pnpm versions being specified.
+The workflow intentionally does not pass a separate pnpm version to `pnpm/action-setup`, avoiding `ERR_PNPM_BAD_PM_VERSION`.

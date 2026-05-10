@@ -11,6 +11,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -23,6 +26,7 @@ jobs:
       tag_name: ${{ steps.meta.outputs.tag_name }}
       release_name: ${{ steps.meta.outputs.release_name }}
       create_tag: ${{ steps.meta.outputs.create_tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -36,15 +40,18 @@ jobs:
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             TAG_NAME="${GITHUB_REF_NAME}"
             CREATE_TAG="false"
+            PRERELEASE="false"
           else
             VERSION="$(node -p "require('./package.json').version")"
             TAG_NAME="v${VERSION}-build.${GITHUB_RUN_NUMBER}"
             CREATE_TAG="true"
+            PRERELEASE="true"
           fi
 
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
           echo "release_name=MCDF Marketplace ${TAG_NAME}" >> "${GITHUB_OUTPUT}"
           echo "create_tag=${CREATE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${PRERELEASE}" >> "${GITHUB_OUTPUT}"
 
   build-tauri:
     name: Build Tauri (${{ matrix.name }})
@@ -118,8 +125,8 @@ jobs:
           name: mcdf-marketplace-${{ matrix.name }}
           if-no-files-found: error
           path: |
-            src-tauri/target/release/bundle/**/*
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*
+            src-tauri/target/release/bundle/**
+            src-tauri/target/${{ matrix.target }}/release/bundle/**
 
   publish-release:
     name: Publish GitHub release
@@ -140,25 +147,81 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          TAG_NAME="${{ needs.metadata.outputs.tag_name }}"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "${{ needs.metadata.outputs.tag_name }}" "${GITHUB_SHA}"
-          git push origin "${{ needs.metadata.outputs.tag_name }}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG_NAME}" >/dev/null 2>&1; then
+            echo "Tag ${TAG_NAME} already exists; keeping it."
+          else
+            git tag "${TAG_NAME}" "${GITHUB_SHA}"
+            git push origin "${TAG_NAME}"
+          fi
 
       - name: Download built bundles
         uses: actions/download-artifact@v4
         with:
           path: release-assets
-          merge-multiple: true
 
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.metadata.outputs.tag_name }}
-          name: ${{ needs.metadata.outputs.release_name }}
-          draft: false
-          prerelease: ${{ needs.metadata.outputs.create_tag == 'true' }}
-          generate_release_notes: true
-          files: release-assets/**/*
+      - name: Package platform artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p packaged-assets
+
+          shopt -s nullglob
+          for artifact_dir in release-assets/*; do
+            if [[ -d "${artifact_dir}" ]]; then
+              artifact_name="$(basename "${artifact_dir}")"
+              echo "Packaging ${artifact_name}"
+              (cd "${artifact_dir}" && zip -r "${GITHUB_WORKSPACE}/packaged-assets/${artifact_name}.zip" .)
+            fi
+          done
+
+          echo "Packaged assets:"
+          find packaged-assets -type f -maxdepth 1 -print
+
+      - name: Create or update release
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.metadata.outputs.tag_name }}
+          RELEASE_NAME: ${{ needs.metadata.outputs.release_name }}
+          PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          prerelease_arg=()
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            prerelease_arg=(--prerelease)
+          fi
+
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            echo "Release ${TAG_NAME} already exists; updating title/flags and uploading new attempt assets."
+            gh release edit "${TAG_NAME}" \
+              --title "${RELEASE_NAME}" \
+              "${prerelease_arg[@]}"
+          else
+            gh release create "${TAG_NAME}" \
+              --title "${RELEASE_NAME}" \
+              --generate-notes \
+              "${prerelease_arg[@]}"
+          fi
+
+      - name: Upload release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.metadata.outputs.tag_name }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          for asset in packaged-assets/*.zip; do
+            base="$(basename "${asset}" .zip)"
+            upload_name="${base}-attempt.${RUN_ATTEMPT}.zip"
+            cp "${asset}" "packaged-assets/${upload_name}"
+            gh release upload "${TAG_NAME}" "packaged-assets/${upload_name}"
+          done
