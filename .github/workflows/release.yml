@@ -81,14 +81,28 @@ jobs:
           args: ${{ matrix.args }}
           releaseId: ${{ needs.create-release.outputs.release_id }}
 
-      - name: Upload to Release
+      # Ubuntu: upload .deb
+      - name: Upload Linux .deb
+        if: matrix.platform == 'ubuntu-22.04'
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: src-tauri/target/release/${{ matrix.platform == 'windows-latest' && 'mcdf-marketplace.exe' || 'mcdf-marketplace' }}
-          asset_name: MCDF-Marketplace-${{ matrix.platform == 'windows-latest' && 'windows.exe' || 'linux' }}
+          asset_path: src-tauri/target/release/bundle/deb/MCDF Marketplace_0.1.0_amd64.deb
+          asset_name: MCDF-Marketplace_amd64.deb
+          asset_content_type: application/vnd.debian.binary-package
+
+      # Windows: upload .exe and .msi
+      - name: Upload Windows .exe
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: src-tauri/target/release/mcdf-marketplace.exe
+          asset_name: MCDF-Marketplace-windows.exe
           asset_content_type: application/vnd.microsoft.portable-executable
       - name: Upload Windows MSI
         if: matrix.platform == 'windows-latest'
@@ -100,23 +114,25 @@ jobs:
           asset_path: src-tauri/target/release/bundle/msi/MCDF Marketplace_0.1.0_x64_en-US.msi
           asset_name: MCDF-Marketplace-windows.msi
           asset_content_type: application/x-msi
-      - name: Upload macOS dmg
-        if: matrix.platform == 'macos-latest'
+
+      # macOS: upload .dmg for each target
+      - name: Upload macOS aarch64 .dmg
+        if: matrix.platform == 'macos-latest' && matrix.target == 'aarch64-apple-darwin'
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/MCDF Marketplace_0.1.0_${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x64' }}.dmg
-          asset_name: MCDF-Marketplace-${{ matrix.target }}.dmg
+          asset_path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/MCDF Marketplace_0.1.0_aarch64.dmg
+          asset_name: MCDF-Marketplace-aarch64-apple-darwin.dmg
           asset_content_type: application/x-apple-diskimage
-      - name: Upload Linux .deb
-        if: matrix.platform == 'ubuntu-22.04'
+      - name: Upload macOS x86_64 .dmg
+        if: matrix.platform == 'macos-latest' && matrix.target == 'x86_64-apple-darwin'
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: src-tauri/target/release/bundle/deb/MCDF Marketplace_0.1.0_amd64.deb
-          asset_name: MCDF-Marketplace_amd64.deb
-          asset_content_type: application/vnd.debian.binary-package
+          asset_path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/MCDF Marketplace_0.1.0_x64.dmg
+          asset_name: MCDF-Marketplace-x86_64-apple-darwin.dmg
+          asset_content_type: application/x-apple-diskimage
