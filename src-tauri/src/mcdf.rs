@@ -77,7 +77,10 @@ impl MCDFParser {
         reader.read_exact(&mut magic)?;
         if &magic != b"MCDF" {
             return Err(MCDFError {
-                message: "Invalid magic bytes".to_string(),
+                message: format!(
+                    "Invalid magic bytes: {:02x?}{:02x?}{:02x?}{:02x?} (expected 4d434446 'MCDF')",
+                    magic[0], magic[1], magic[2], magic[3]
+                ),
             });
         }
 
