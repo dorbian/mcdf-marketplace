@@ -1,4 +1,5 @@
 use crate::local_cache;
+use crate::mcdf::MCDFParser;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -17,6 +18,8 @@ pub struct VaultManifest {
     pub mcdf_size: u64,
     pub chunk_size: u64,
     pub chunks: Vec<VaultChunk>,
+    #[serde(default)]
+    pub mcdf_files: Vec<ManifestMcdfFile>,
     #[serde(default)]
     pub parity: Vec<VaultChunk>,
     #[serde(default)]
@@ -54,6 +57,62 @@ pub struct VaultChunk {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestMcdfFile {
+    pub index: u32,
+    pub game_paths: Vec<String>,
+    pub length: u64,
+    pub mcdf_hash: String,
+    pub payload_offset: u64,
+    pub payload_blake3: String,
+    #[serde(default)]
+    pub central_status: ComponentCentralStatus,
+    #[serde(default)]
+    pub central_blob_url: Option<String>,
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ComponentCentralStatus {
+    #[default]
+    Unknown,
+    Present,
+    Missing,
+    Queued,
+    ExternalOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestStatus {
+    pub archive_id: String,
+    pub chunks: Vec<ChunkAvailability>,
+    pub files: Vec<ComponentAvailability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkAvailability {
+    pub index: u32,
+    pub hash_blake3: String,
+    pub size: u64,
+    pub cached: bool,
+    pub online_available: bool,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentAvailability {
+    pub index: u32,
+    pub game_paths: Vec<String>,
+    pub length: u64,
+    pub mcdf_hash: String,
+    pub payload_blake3: String,
+    pub central_status: ComponentCentralStatus,
+    pub online_status: String,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestBuildResult {
     pub manifest: VaultManifest,
     pub manifest_path: String,
@@ -76,14 +135,39 @@ pub fn create_local_manifest(
     chunk_size: Option<usize>,
 ) -> Result<ManifestBuildResult, String> {
     let chunk_size = chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE).max(1024 * 1024);
-    let mut file = File::open(input_path).map_err(|e| e.to_string())?;
-    let metadata = file.metadata().map_err(|e| e.to_string())?;
+    let metadata = fs::metadata(input_path).map_err(|e| e.to_string())?;
     let original_filename = input_path
         .file_name()
         .and_then(|v| v.to_str())
         .unwrap_or("archive.mcdf")
         .to_string();
 
+    // MCDF is a compiled package. Parse it before chunking so manifests carry
+    // the individual internal component/file list and their payload hashes.
+    let mut parse_file = File::open(input_path).map_err(|e| e.to_string())?;
+    let (mcdf_metadata, binary_payload) = MCDFParser::parse(&mut parse_file)
+        .map_err(|e| format!("Failed to extract MCDF before manifest creation: {e}"))?;
+    let extracted_files = MCDFParser::extract_file_infos(&mcdf_metadata, &binary_payload)
+        .map_err(|e| format!("Failed to inspect MCDF internal files: {e}"))?;
+    let mcdf_files: Vec<ManifestMcdfFile> = extracted_files
+        .into_iter()
+        .map(|file| ManifestMcdfFile {
+            index: file.index as u32,
+            game_paths: file.game_paths,
+            length: file.length as u64,
+            mcdf_hash: file.hash,
+            payload_offset: file.offset,
+            payload_blake3: file.blake3,
+            central_status: ComponentCentralStatus::Unknown,
+            central_blob_url: None,
+            notes: Vec::new(),
+        })
+        .collect();
+
+    // Re-open the original MCDF bytes for chunking. The chunks represent the
+    // compiled MCDF artifact; the mcdf_files section above represents the files
+    // inside that compiled artifact.
+    let mut file = File::open(input_path).map_err(|e| e.to_string())?;
     let mut full_hasher = blake3::Hasher::new();
     let mut chunks = Vec::new();
     let mut buffer = vec![0u8; chunk_size];
@@ -135,6 +219,7 @@ pub fn create_local_manifest(
         mcdf_size: metadata.len(),
         chunk_size: chunk_size as u64,
         chunks,
+        mcdf_files,
         parity: Vec::new(),
         source: ManifestSource::default(),
     };
@@ -225,6 +310,98 @@ pub fn rebuild_from_manifest(
         chunks_used: manifest.chunks.len(),
         downloaded_chunks,
         verified_blake3,
+    })
+}
+
+pub fn inspect_manifest_status(manifest_path: &Path) -> Result<ManifestStatus, String> {
+    let manifest = read_manifest(manifest_path)?;
+    let mut chunks = manifest.chunks.clone();
+    chunks.sort_by_key(|chunk| chunk.index);
+
+    let chunk_statuses: Vec<ChunkAvailability> = chunks
+        .iter()
+        .map(|chunk| {
+            let cached = local_cache::blob_path(&chunk.hash_blake3)
+                .map(|path| path.exists())
+                .unwrap_or(false)
+                || chunk
+                    .local_path
+                    .as_ref()
+                    .map(|path| PathBuf::from(path).exists())
+                    .unwrap_or(false);
+            let online_available = chunk.attachment_url.as_ref().map(|url| !url.trim().is_empty()).unwrap_or(false);
+            let status = if cached {
+                "cached"
+            } else if online_available {
+                "online_available"
+            } else {
+                "missing"
+            };
+            ChunkAvailability {
+                index: chunk.index,
+                hash_blake3: chunk.hash_blake3.clone(),
+                size: chunk.size,
+                cached,
+                online_available,
+                status: status.to_string(),
+            }
+        })
+        .collect();
+
+    let all_chunks_cached = !chunk_statuses.is_empty() && chunk_statuses.iter().all(|chunk| chunk.cached);
+    let all_chunks_available = !chunk_statuses.is_empty()
+        && chunk_statuses.iter().all(|chunk| chunk.cached || chunk.online_available);
+    let external_package_available = manifest
+        .source
+        .online_source_url
+        .as_ref()
+        .map(|url| !url.trim().is_empty())
+        .unwrap_or(false);
+
+    let files = manifest
+        .mcdf_files
+        .iter()
+        .map(|file| {
+            let mut notes = file.notes.clone();
+            let online_status = match file.central_status {
+                ComponentCentralStatus::Present => "central_present",
+                ComponentCentralStatus::Missing => "central_missing",
+                ComponentCentralStatus::Queued => "central_queued",
+                ComponentCentralStatus::ExternalOnly => "external_only",
+                ComponentCentralStatus::Unknown => {
+                    if file.central_blob_url.as_ref().map(|url| !url.trim().is_empty()).unwrap_or(false) {
+                        "central_present"
+                    } else if all_chunks_cached {
+                        "local_cached"
+                    } else if all_chunks_available {
+                        "package_chunks_available"
+                    } else if external_package_available {
+                        "external_package_available"
+                    } else {
+                        "unknown_or_missing"
+                    }
+                }
+            };
+            if file.central_status == ComponentCentralStatus::Unknown && file.central_blob_url.is_none() {
+                notes.push("No central component status has been checked yet.".to_string());
+            }
+            ComponentAvailability {
+                index: file.index,
+                game_paths: file.game_paths.clone(),
+                length: file.length,
+                mcdf_hash: file.mcdf_hash.clone(),
+                payload_blake3: file.payload_blake3.clone(),
+                central_status: file.central_status.clone(),
+                online_status: online_status.to_string(),
+                notes,
+            }
+        })
+        .collect();
+
+    Ok(ManifestStatus {
+        archive_id: manifest.archive_id,
+        chunks: chunk_statuses,
+        files,
     })
 }
 

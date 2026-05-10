@@ -1,7 +1,7 @@
 use crate::local_cache;
 use crate::mcdf::{ExtractedFileInfo, MCDFParser, MareCharaFileData};
 use crate::online_locations::{self, OnlineLocation, OnlineLocationScanResult, OnlineLocationType, OnlineManifestBuildRequest};
-use crate::vault_manifest::{self, ManifestBuildResult, RebuildResult, VaultManifest};
+use crate::vault_manifest::{self, ManifestBuildResult, ManifestStatus, RebuildResult, VaultManifest};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
@@ -39,6 +39,12 @@ pub fn create_local_manifest(
 #[command]
 pub fn read_manifest(path: String) -> Result<VaultManifest, String> {
     vault_manifest::read_manifest(PathBuf::from(path).as_path())
+}
+
+
+#[command]
+pub fn inspect_manifest_status(path: String) -> Result<ManifestStatus, String> {
+    vault_manifest::inspect_manifest_status(PathBuf::from(path).as_path())
 }
 
 #[command]

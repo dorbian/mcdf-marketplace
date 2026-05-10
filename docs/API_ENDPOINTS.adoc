@@ -532,3 +532,113 @@ Imports or queues an external MCDF/image pair into the central vault. The server
 ----
 
 The desktop app does not require this endpoint. It can already download an online MCDF directly, create a local manifest, chunk it into the local cache, and produce the handoff manifest for later central ingestion.
+
+== Component extraction and central status
+
+The desktop client now extracts every MCDF before manifest creation. The compiled MCDF is still chunked as one transport artifact, but the manifest also carries the files/components inside the MCDF so the central service can reason about missing layers individually.
+
+.VaultManifest component fields
+[source,json]
+----
+{
+  "mcdf_files": [
+    {
+      "index": 0,
+      "game_paths": ["chara/.../material.mtrl"],
+      "length": 12345,
+      "mcdf_hash": "mare-or-mcdf-file-hash-if-present",
+      "payload_offset": 0,
+      "payload_blake3": "internal-file-payload-blake3",
+      "central_status": "unknown",
+      "central_blob_url": null,
+      "notes": []
+    }
+  ]
+}
+----
+
+The local application can work without these central checks. When no server check has happened yet, internal files are shown as local/cache/package available depending on the manifest chunks and source URL.
+
+=== POST /v1/components/check
+
+Checks which individual internal MCDF files are already known by the central system. This is separate from chunk preflight because chunks represent the compiled package, while components represent the files inside the package.
+
+.Request
+[source,json]
+----
+{
+  "archive_id": "mcdf_4db2f1c0348aa001",
+  "components": [
+    {
+      "index": 0,
+      "mcdf_hash": "mare-or-mcdf-file-hash-if-present",
+      "payload_blake3": "internal-file-payload-blake3",
+      "length": 12345,
+      "game_paths": ["chara/.../material.mtrl"]
+    }
+  ]
+}
+----
+
+.Response
+[source,json]
+----
+{
+  "archive_id": "mcdf_4db2f1c0348aa001",
+  "components": [
+    {
+      "index": 0,
+      "payload_blake3": "internal-file-payload-blake3",
+      "status": "present",
+      "blob_url": "https://example.org/v1/components/blake3/internal-file-payload-blake3",
+      "notes": []
+    },
+    {
+      "index": 1,
+      "payload_blake3": "another-hash",
+      "status": "missing",
+      "blob_url": null,
+      "notes": ["not present in central component store"]
+    }
+  ]
+}
+----
+
+Allowed component statuses:
+
+* `present` - central store already has the internal file/component.
+* `missing` - central store does not have it yet.
+* `queued` - central import has been requested but is not complete.
+* `external_only` - the component is only known through an external online library package.
+* `unknown` - no central check has been performed.
+
+=== POST /v1/components/import-missing
+
+Requests the server or bot-side process to import only missing internal components from an already-known archive/source. This endpoint should not be required for normal serverless downloads.
+
+.Request
+[source,json]
+----
+{
+  "archive_id": "mcdf_4db2f1c0348aa001",
+  "source_manifest_url": "https://example.org/v1/archives/mcdf_4db2f1c0348aa001/manifest",
+  "components": [
+    {
+      "index": 1,
+      "payload_blake3": "another-hash",
+      "length": 9999,
+      "game_paths": ["chara/.../texture.tex"]
+    }
+  ]
+}
+----
+
+.Response
+[source,json]
+----
+{
+  "archive_id": "mcdf_4db2f1c0348aa001",
+  "accepted": true,
+  "queued_components": ["another-hash"]
+}
+----
