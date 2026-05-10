@@ -56,9 +56,7 @@ impl std::error::Error for MCDFError {}
 
 impl From<std::io::Error> for MCDFError {
     fn from(e: std::io::Error) -> Self {
-        MCDFError {
-            message: e.to_string(),
-        }
+        MCDFError { message: e.to_string() }
     }
 }
 
@@ -79,23 +77,29 @@ impl MCDFParser {
         let mut peek = [0u8; 4];
         let n = reader.read(&mut peek).map_err(|e| MCDFError { message: e.to_string() })?;
         if n < 4 {
-            return Err(MCDFError { message: format!("File too small ({} bytes)", n) });
+            return Err(MCDFError {
+                message: format!("File too small ({} bytes)", n),
+            });
         }
 
         // If gzip-compressed (FFXIV stores MCDF gzipped on disk), decompress then parse
-        if &peek == b"\x1f\x8b\x08" {
+        if &peek[..3] == b"\x1f\x8b\x08" {
             let mut all_data = peek.to_vec();
-            reader.read_to_end(&mut all_data).map_err(|e| MCDFError { message: e.to_string() })?;
+            std::io::Read::read_to_end(reader, &mut all_data)
+                .map_err(|e| MCDFError { message: e.to_string() })?;
             let mut gz = GzDecoder::new(&all_data[..]);
             let mut decompressed = Vec::new();
-            gz.read_to_end(&mut decompressed)
-                .map_err(|e| MCDFError { message: format!("gzip decompression failed: {}", e) })?;
+            std::io::Read::read_to_end(&mut gz, &mut decompressed)
+                .map_err(|e| MCDFError {
+                    message: format!("gzip decompression failed: {}", e),
+                })?;
             return Self::parse_from_slice(&decompressed);
         }
 
         // Otherwise read rest of file and parse as raw MCDF
         let mut all_data = peek.to_vec();
-        reader.read_to_end(&mut all_data).map_err(|e| MCDFError { message: e.to_string() })?;
+        std::io::Read::read_to_end(reader, &mut all_data)
+            .map_err(|e| MCDFError { message: e.to_string() })?;
         Self::parse_from_slice(&all_data)
     }
 
