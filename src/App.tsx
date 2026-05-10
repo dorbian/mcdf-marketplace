@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
@@ -118,12 +118,32 @@ type OnlineLocationScanResult = {
   warnings: string[];
 };
 
-const tabs: Array<{ id: Tab; label: string }> = [
-  { id: "marketplace", label: "Marketplace" },
-  { id: "library", label: "Online Library" },
-  { id: "prepare", label: "Prepare MCDF" },
-  { id: "inspect", label: "Inspect MCDF" },
-  { id: "settings", label: "Settings" },
+type FileLike = ExtractedFileInfo | ComponentAvailability | ManifestMcdfFile;
+
+type PanelProps = {
+  addOperation: (op: Omit<Operation, "id" | "startedAt" | "status">) => string;
+  finishOperation: (id: string, patch: Partial<Operation>) => void;
+};
+
+const navSections: Array<{ title: string; items: Array<{ id: Tab; label: string; icon: string; hint: string }> }> = [
+  {
+    title: "Browse",
+    items: [
+      { id: "marketplace", label: "Vault Browser", icon: "✦", hint: "Manifests and rebuilds" },
+      { id: "library", label: "Online Libraries", icon: "⌁", hint: "Drive and index sources" },
+    ],
+  },
+  {
+    title: "Build",
+    items: [
+      { id: "prepare", label: "Prepare MCDF", icon: "◇", hint: "Extract then package" },
+      { id: "inspect", label: "Inspect Bundle", icon: "◎", hint: "Read compiled contents" },
+    ],
+  },
+  {
+    title: "System",
+    items: [{ id: "settings", label: "Settings", icon: "⚙", hint: "Cache and build info" }],
+  },
 ];
 
 function formatBytes(value?: number): string {
@@ -141,41 +161,129 @@ function shortHash(value?: string | null): string {
   if (!value) return "—";
   return value.length <= 18 ? value : `${value.slice(0, 10)}…${value.slice(-8)}`;
 }
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ");
+function statusLabel(status?: string | null): string {
+  return (status || "local_only").replace(/_/g, " ");
 }
+function filePrimaryPath(file: FileLike): string {
+  return file.game_paths?.[0] || "unknown path";
+}
+function fileBlake3(file: FileLike): string {
+  if ("payload_blake3" in file) return file.payload_blake3;
+  return file.blake3;
+}
+function fileMcdfHash(file: FileLike): string {
+  if ("mcdf_hash" in file) return file.mcdf_hash;
+  return file.hash;
+}
+function fileOffset(file: FileLike): number | undefined {
+  if ("payload_offset" in file) return file.payload_offset;
+  if ("offset" in file) return file.offset;
+  return undefined;
+}
+function fileStatus(file: FileLike): string {
+  if ("online_status" in file) return file.online_status;
+  if ("central_status" in file) return file.central_status;
+  return "local_only";
+}
+function fileNotes(file: FileLike): string[] {
+  return "notes" in file ? file.notes : [];
+}
+function inferComponentKind(file: Pick<FileLike, "game_paths">): string {
+  const joined = file.game_paths.join(" ").toLowerCase();
+  if (joined.includes("animation") || joined.endsWith(".pap") || joined.endsWith(".tmb")) return "Animation";
+  if (joined.endsWith(".tex") || joined.endsWith(".atex") || joined.includes("/texture/")) return "Texture";
+  if (joined.endsWith(".mtrl") || joined.includes("/material/")) return "Material";
+  if (joined.endsWith(".mdl") || joined.includes("/model/")) return "Model";
+  if (joined.endsWith(".sklb") || joined.includes("skeleton")) return "Skeleton";
+  if (joined.includes("tail")) return "Tail / Feature";
+  if (joined.includes("hair")) return "Hair";
+  if (joined.includes("face") || joined.includes("head")) return "Face";
+  return "Other";
+}
+function groupedFiles(files: FileLike[]): Array<{ kind: string; files: FileLike[]; bytes: number; online: number; missing: number }> {
+  const map = new Map<string, FileLike[]>();
+  files.forEach((file) => {
+    const kind = inferComponentKind(file);
+    map.set(kind, [...(map.get(kind) ?? []), file]);
+  });
+  return Array.from(map.entries())
+    .map(([kind, list]) => ({
+      kind,
+      files: list,
+      bytes: list.reduce((sum, file) => sum + file.length, 0),
+      online: list.filter((file) => ["present", "cached", "online_available", "external_only"].includes(fileStatus(file))).length,
+      missing: list.filter((file) => ["missing", "chunk_missing"].includes(fileStatus(file))).length,
+    }))
+    .sort((a, b) => b.files.length - a.files.length);
+}
+function statusClass(status: string): string {
+  if (["present", "cached", "online_available", "external_only", "local_only"].includes(status)) return "status-good";
+  if (["queued", "unknown"].includes(status)) return "status-warn";
+  if (["missing", "chunk_missing"].includes(status)) return "status-bad";
+  return "status-neutral";
+}
+
 function ErrorBox({ error }: { error: string | null }) {
-  return error ? <div className="rounded-lg border border-red-700 bg-red-950/40 p-4 text-sm text-red-200">{error}</div> : null;
+  return error ? <div className="alert alert-error">{error}</div> : null;
 }
-function SuccessBox({ children }: { children: React.ReactNode }) {
-  return <div className="rounded-lg border border-emerald-700 bg-emerald-950/30 p-4 text-sm text-emerald-200">{children}</div>;
+function SuccessBox({ children }: { children: ReactNode }) {
+  return <div className="alert alert-success">{children}</div>;
+}
+function Panel({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return <section className={`glass-panel ${className}`}>{children}</section>;
+}
+function PrimaryButton(props: ButtonHTMLAttributes<HTMLButtonElement>) {
+  const { className = "", ...rest } = props;
+  return <button {...rest} className={`btn-primary ${className}`} />;
+}
+function GhostButton(props: ButtonHTMLAttributes<HTMLButtonElement>) {
+  const { className = "", ...rest } = props;
+  return <button {...rest} className={`btn-ghost ${className}`} />;
+}
+function Field(props: InputHTMLAttributes<HTMLInputElement>) {
+  const { className = "", ...rest } = props;
+  return <input {...rest} className={`field ${className}`} />;
+}
+function SelectField(props: SelectHTMLAttributes<HTMLSelectElement>) {
+  const { className = "", ...rest } = props;
+  return <select {...rest} className={`field ${className}`} />;
 }
 
 function ActivityIndicator({ operations }: { operations: Operation[] }) {
   const active = operations.filter((op) => op.status === "running");
-  const recent = operations.slice(0, 6);
+  const done = operations.filter((op) => op.status === "done").length;
+  const failed = operations.filter((op) => op.status === "failed").length;
+  const recent = operations.slice(0, 8);
+  const totalSpeed = active.reduce((sum, op) => {
+    const elapsed = (Date.now() - op.startedAt) / 1000;
+    return op.bytesDone && elapsed > 0 ? sum + op.bytesDone / elapsed : sum;
+  }, 0);
   return (
-    <details className="relative">
-      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-full border border-[#0f3460] bg-[#0a0a1a] px-3 py-1 text-xs text-gray-200 hover:bg-[#0f3460]/50">
-        <span>{active.length > 0 ? "●" : "○"}</span>
+    <details className="activity">
+      <summary className="activity-summary">
+        <span className={active.length > 0 ? "pulse-dot" : "idle-dot"} />
         <span>{active.length > 0 ? `${active.length} active` : "transfers"}</span>
+        <span className="activity-speed">{active.length > 0 ? formatBytes(totalSpeed) + "/s" : `${done} done`}</span>
       </summary>
-      <div className="absolute right-0 z-10 mt-2 w-96 rounded-xl border border-[#0f3460] bg-[#0a0a1a] p-3 shadow-xl">
-        <div className="mb-2 text-xs uppercase tracking-wider text-gray-500">Uploads / downloads</div>
-        {recent.length === 0 ? <div className="text-sm text-gray-500">No operations yet.</div> : recent.map((op) => {
+      <div className="activity-popover">
+        <div className="activity-head">
+          <span>Uploads / downloads</span>
+          <span>{failed > 0 ? `${failed} failed` : "healthy"}</span>
+        </div>
+        {recent.length === 0 ? <div className="empty-small">No operations yet.</div> : recent.map((op) => {
           const elapsed = ((op.endedAt ?? Date.now()) - op.startedAt) / 1000;
           const speed = op.bytesDone && elapsed > 0 ? `${formatBytes(op.bytesDone / elapsed)}/s` : "—";
           return (
-            <div key={op.id} className="border-t border-[#0f3460] py-2 first:border-t-0">
-              <div className="flex items-center justify-between gap-3 text-sm">
-                <span className="truncate text-gray-200">{op.label}</span>
-                <span className={op.status === "failed" ? "text-red-300" : op.status === "done" ? "text-emerald-300" : "text-yellow-300"}>{op.status}</span>
+            <div key={op.id} className="activity-row">
+              <div className="activity-row-title">
+                <span>{op.label}</span>
+                <span className={`status-pill ${statusClass(op.status)}`}>{op.status}</span>
               </div>
-              <div className="mt-1 flex justify-between text-xs text-gray-500">
+              <div className="activity-row-meta">
                 <span>{op.kind}</span>
                 <span>{formatBytes(op.bytesDone)} {op.bytesTotal ? `/ ${formatBytes(op.bytesTotal)}` : ""} · {speed}</span>
               </div>
-              {op.message && <div className="mt-1 truncate text-xs text-gray-400">{op.message}</div>}
+              {op.message && <div className="activity-message">{op.message}</div>}
             </div>
           );
         })}
@@ -184,53 +292,105 @@ function ActivityIndicator({ operations }: { operations: Operation[] }) {
   );
 }
 
-function ComponentTable({ files, title = "Internal MCDF files" }: { files: Array<ExtractedFileInfo | ComponentAvailability | ManifestMcdfFile>; title?: string }) {
+function HeroPreview({ title, subtitle, imageUrl }: { title: string; subtitle: string; imageUrl?: string | null }) {
+  return (
+    <Panel className="hero-preview">
+      <div className="preview-stage">
+        {imageUrl ? <img src={imageUrl} alt={title} /> : <div className="preview-silhouette">✧</div>}
+        <div className="preview-ring" />
+      </div>
+      <div className="preview-strip">
+        {Array.from({ length: 5 }).map((_, index) => <div key={index} className="preview-thumb">{index === 0 ? "◇" : ""}</div>)}
+      </div>
+      <div className="preview-caption">
+        <div>
+          <strong>{title}</strong>
+          <span>{subtitle}</span>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function ComponentSummary({ files }: { files: FileLike[] }) {
+  const groups = groupedFiles(files);
+  const totalBytes = files.reduce((sum, file) => sum + file.length, 0);
+  return (
+    <Panel>
+      <div className="panel-title-row">
+        <div>
+          <div className="eyebrow">Component stack</div>
+          <h2>Bundle contents</h2>
+        </div>
+        <span className="status-pill status-neutral">{files.length} files</span>
+      </div>
+      <div className="summary-metrics">
+        <div><strong>{groups.length}</strong><span>groups</span></div>
+        <div><strong>{formatBytes(totalBytes)}</strong><span>payload</span></div>
+        <div><strong>{files.filter((f) => fileStatus(f) !== "missing").length}</strong><span>available/local</span></div>
+      </div>
+      <div className="component-grid">
+        {groups.length === 0 && <div className="empty-small">No extracted files yet.</div>}
+        {groups.map((group) => (
+          <div key={group.kind} className="component-card">
+            <div className="component-icon">{group.kind.slice(0, 1)}</div>
+            <div>
+              <div className="component-name">{group.kind}</div>
+              <div className="component-meta">{group.files.length} files · {formatBytes(group.bytes)}</div>
+              {group.missing > 0 && <div className="component-warning">{group.missing} missing</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function ComponentTable({ files, title = "Internal MCDF files" }: { files: FileLike[]; title?: string }) {
   const [expanded, setExpanded] = useState<number | null>(null);
   return (
-    <div className="overflow-hidden rounded-xl bg-[#16213e]">
-      <div className="border-b border-[#0f3460] px-4 py-2 text-xs uppercase tracking-wider text-gray-400">{title} ({files.length})</div>
-      <div className="max-h-[32rem] overflow-y-auto">
-        {files.length === 0 && <p className="px-4 py-6 text-center text-sm text-gray-500">No internal files found.</p>}
+    <Panel className="component-table-panel">
+      <div className="panel-title-row">
+        <div>
+          <div className="eyebrow">Extracted package details</div>
+          <h2>{title}</h2>
+        </div>
+        <span className="status-pill status-neutral">{files.length} entries</span>
+      </div>
+      <div className="component-table">
+        {files.length === 0 && <p className="empty-small">No internal files found.</p>}
         {files.map((file) => {
-          const payloadHash = "payload_blake3" in file ? file.payload_blake3 : file.blake3;
-          const mcdfHash = "mcdf_hash" in file ? file.mcdf_hash : file.hash;
-          const length = file.length;
-          const onlineStatus = "online_status" in file ? file.online_status : "local_only";
-          const notes = "notes" in file ? file.notes : [];
+          const status = fileStatus(file);
+          const primaryPath = filePrimaryPath(file);
           return (
-            <div key={file.index} className="border-b border-[#0f3460] last:border-b-0">
-              <button className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-[#0f3460]/50" onClick={() => setExpanded(expanded === file.index ? null : file.index)}>
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="w-8 shrink-0 text-xs text-gray-500">#{file.index + 1}</span>
-                  <div className="min-w-0">
-                    {file.game_paths.length > 0 ? file.game_paths.map((p, pi) => <div key={pi} className="truncate font-mono text-sm text-gray-200" title={p}>{p}</div>) : <span className="text-sm italic text-gray-500">No path</span>}
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-3">
-                  <span className="rounded-full border border-[#0f3460] px-2 py-0.5 text-xs text-gray-300">{statusLabel(onlineStatus)}</span>
-                  <span className="text-xs tabular-nums text-gray-500">{formatBytes(length)}</span>
-                  <span className="text-sm text-gray-400">{expanded === file.index ? "▾" : "▸"}</span>
-                </div>
+            <div key={file.index} className="file-row">
+              <button className="file-row-main" onClick={() => setExpanded(expanded === file.index ? null : file.index)}>
+                <span className="file-index">#{file.index + 1}</span>
+                <span className="file-kind">{inferComponentKind(file)}</span>
+                <span className="file-path" title={primaryPath}>{primaryPath}</span>
+                <span className={`status-pill ${statusClass(status)}`}>{statusLabel(status)}</span>
+                <span className="file-size">{formatBytes(file.length)}</span>
+                <span className="file-expand">{expanded === file.index ? "▾" : "▸"}</span>
               </button>
               {expanded === file.index && (
-                <div className="space-y-1 border-t border-[#0f3460] bg-[#0a0a1a] px-4 py-3 font-mono text-xs text-gray-400">
-                  {"payload_offset" in file && <div>payload offset: {file.payload_offset}</div>}
-                  {"offset" in file && <div>payload offset: {file.offset}</div>}
-                  <div>MCDF file hash: {mcdfHash || "—"}</div>
-                  <div>BLAKE3 payload hash: {payloadHash}</div>
+                <div className="file-row-details">
+                  {file.game_paths.slice(1).map((path, index) => <div key={index}>also: {path}</div>)}
+                  {fileOffset(file) !== undefined && <div>payload offset: {fileOffset(file)}</div>}
+                  <div>MCDF file hash: {fileMcdfHash(file) || "—"}</div>
+                  <div>BLAKE3 payload hash: {fileBlake3(file)}</div>
                   {"central_status" in file && <div>central status: {file.central_status}</div>}
-                  {notes.map((note, index) => <div key={index}>note: {note}</div>)}
+                  {fileNotes(file).map((note, index) => <div key={index}>note: {note}</div>)}
                 </div>
               )}
             </div>
           );
         })}
       </div>
-    </div>
+    </Panel>
   );
 }
 
-function MarketplacePanel({ addOperation, finishOperation }: { addOperation: (op: Omit<Operation, "id" | "startedAt" | "status">) => string; finishOperation: (id: string, patch: Partial<Operation>) => void }) {
+function MarketplacePanel({ addOperation, finishOperation }: PanelProps) {
   const [manifestPath, setManifestPath] = useState<string | null>(null);
   const [manifest, setManifest] = useState<VaultManifest | null>(null);
   const [manifestStatus, setManifestStatus] = useState<ManifestStatus | null>(null);
@@ -275,54 +435,54 @@ function MarketplacePanel({ addOperation, finishOperation }: { addOperation: (op
     }
   };
 
+  const files = manifestStatus?.files ?? manifest?.mcdf_files ?? [];
   const cachedChunks = manifestStatus?.chunks.filter((chunk) => chunk.cached).length ?? 0;
   const onlineChunks = manifestStatus?.chunks.filter((chunk) => chunk.online_available).length ?? 0;
 
   return (
-    <div className="space-y-4">
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="rounded-xl bg-[#16213e] p-5 lg:col-span-2">
-          <div className="text-xs uppercase tracking-wider text-gray-500">Local-first marketplace</div>
-          <h2 className="mt-2 text-2xl font-bold text-gray-100">MCDF packages are inspected before upload or rebuild.</h2>
-          <p className="mt-3 text-sm leading-6 text-gray-300">An MCDF is a compiled package. The app now extracts the package metadata first, records every internal file/component in the manifest, then chunks the compiled MCDF for transport. The download/rebuild path is an action, not a main menu area.</p>
-        </div>
-        <div className="rounded-xl bg-[#16213e] p-5">
-          <div className="text-xs uppercase tracking-wider text-gray-500">Actions</div>
-          <button onClick={chooseManifest} className="mt-3 w-full rounded-lg bg-[#e94560] px-4 py-2 text-sm font-medium text-white hover:bg-[#e94560]/80">Open manifest / rebuild…</button>
-          <p className="mt-3 text-xs text-gray-500">Works without a server when the manifest contains direct chunk URLs or the chunks are already cached locally.</p>
-        </div>
-      </div>
-
-      <ErrorBox error={error} />
-
-      {manifest && (
-        <div className="space-y-4">
-          <div className="rounded-xl bg-[#16213e] p-4">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <div className="text-lg font-semibold text-gray-100">{manifest.title || manifest.original_filename}</div>
-                <div className="text-sm text-gray-400">{manifest.description || "No description"}</div>
-              </div>
-              <button onClick={rebuild} className="rounded-lg bg-[#e94560] px-4 py-2 text-sm font-medium text-white hover:bg-[#e94560]/80">Rebuild MCDF…</button>
-            </div>
-            <div className="mt-4 grid gap-3 text-sm md:grid-cols-5">
-              <div><div className="text-gray-500">Archive</div><div className="font-mono text-gray-200">{manifest.archive_id}</div></div>
-              <div><div className="text-gray-500">Size</div><div>{formatBytes(manifest.mcdf_size)}</div></div>
-              <div><div className="text-gray-500">Chunks</div><div>{cachedChunks}/{manifest.chunks.length} cached · {onlineChunks} online</div></div>
-              <div><div className="text-gray-500">Internal files</div><div>{manifest.mcdf_files?.length ?? 0}</div></div>
-              <div><div className="text-gray-500">Hash</div><div className="font-mono" title={manifest.mcdf_hash_blake3}>{shortHash(manifest.mcdf_hash_blake3)}</div></div>
-            </div>
+    <div className="screen-grid">
+      <HeroPreview title={manifest?.title || "MCDF Vault"} subtitle={manifest ? manifest.original_filename : "Open a manifest to inspect files and rebuild"} imageUrl={manifest?.source?.thumbnail_url} />
+      <div className="main-stack">
+        <Panel className="hero-copy">
+          <div className="eyebrow">Local-first vault browser</div>
+          <h1>Inspect the compiled package before rebuilding it.</h1>
+          <p>MCDF bundles are treated as compiled archives. The app tracks the original archive chunks and every internal file so you can see what is cached, online, missing, or only available from an external library.</p>
+          <div className="hero-actions">
+            <PrimaryButton onClick={chooseManifest}>Open manifest / rebuild…</PrimaryButton>
+            {manifest && <GhostButton onClick={rebuild}>Rebuild MCDF…</GhostButton>}
           </div>
-          {manifestStatus ? <ComponentTable files={manifestStatus.files} title="Internal files and online status" /> : <ComponentTable files={manifest.mcdf_files ?? []} />}
-        </div>
-      )}
-
-      {rebuildResult && <SuccessBox><div className="font-semibold">MCDF rebuilt and verified</div><div className="mt-2 font-mono text-xs">{rebuildResult.output_path}</div></SuccessBox>}
+        </Panel>
+        <ErrorBox error={error} />
+        {manifest && (
+          <Panel>
+            <div className="panel-title-row">
+              <div>
+                <div className="eyebrow">Selected archive</div>
+                <h2>{manifest.title || manifest.original_filename}</h2>
+                <p>{manifest.description || "No description provided."}</p>
+              </div>
+              <span className="status-pill status-good">ready</span>
+            </div>
+            <div className="stat-grid">
+              <div><span>Archive</span><strong>{manifest.archive_id}</strong></div>
+              <div><span>Size</span><strong>{formatBytes(manifest.mcdf_size)}</strong></div>
+              <div><span>Chunks</span><strong>{cachedChunks}/{manifest.chunks.length} cached · {onlineChunks} online</strong></div>
+              <div><span>Files</span><strong>{files.length}</strong></div>
+              <div><span>Hash</span><strong title={manifest.mcdf_hash_blake3}>{shortHash(manifest.mcdf_hash_blake3)}</strong></div>
+            </div>
+          </Panel>
+        )}
+        {rebuildResult && <SuccessBox><div className="font-semibold">MCDF rebuilt and verified</div><div className="mt-2 font-mono text-xs">{rebuildResult.output_path}</div></SuccessBox>}
+      </div>
+      <aside className="right-stack">
+        <ComponentSummary files={files} />
+      </aside>
+      <div className="wide-area">{files.length > 0 && <ComponentTable files={files} title="Internal files and online status" />}</div>
     </div>
   );
 }
 
-function PreparePanel({ addOperation, finishOperation }: { addOperation: (op: Omit<Operation, "id" | "startedAt" | "status">) => string; finishOperation: (id: string, patch: Partial<Operation>) => void }) {
+function PreparePanel({ addOperation, finishOperation }: PanelProps) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [info, setInfo] = useState<MCDFInfo | null>(null);
   const [files, setFiles] = useState<ExtractedFileInfo[]>([]);
@@ -383,36 +543,44 @@ function PreparePanel({ addOperation, finishOperation }: { addOperation: (op: Om
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold text-gray-100">Prepare MCDF</h2>
-          <p className="text-sm text-gray-400">The MCDF is extracted first so the manifest knows every internal file/component before chunking the compiled package.</p>
-        </div>
-        <button onClick={chooseFile} className="rounded-lg bg-[#e94560] px-4 py-2 text-sm font-medium text-white hover:bg-[#e94560]/80">Choose MCDF…</button>
+    <div className="screen-grid">
+      <HeroPreview title={title || "Prepare MCDF"} subtitle={selectedPath ? selectedPath.split(/[\\/]/).pop() || selectedPath : "Choose a compiled bundle"} />
+      <div className="main-stack">
+        <Panel className="hero-copy">
+          <div className="eyebrow">Extract first</div>
+          <h1>Turn a compiled MCDF into visible components.</h1>
+          <p>The package is inspected before chunking. The manifest records the internal files, their offsets, hashes, component groups, and future central status.</p>
+          <div className="hero-actions"><PrimaryButton onClick={chooseFile}>Choose MCDF…</PrimaryButton></div>
+        </Panel>
+        {selectedPath && <div className="path-chip" title={selectedPath}>{selectedPath}</div>}
+        {loading && <div className="loader" />}
+        <ErrorBox error={error} />
+        {info && (
+          <Panel>
+            <div className="panel-title-row">
+              <div>
+                <div className="eyebrow">Package metadata</div>
+                <h2>{info.description ? "Description found" : "No description in archive"}</h2>
+                <p>{info.description || "Add a marketplace title and description before preparing the local manifest."}</p>
+              </div>
+              <span className="status-pill status-good">{files.length} files</span>
+            </div>
+            <div className="form-grid">
+              <Field value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Marketplace title, defaults to filename" />
+              <Field value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Marketplace description" />
+            </div>
+            <div className="hero-actions"><PrimaryButton disabled={loading || !selectedPath} onClick={createManifest}>Create manifest + local chunks</PrimaryButton></div>
+          </Panel>
+        )}
+        {result && <SuccessBox><div className="font-semibold">Manifest created after extraction</div><div className="mt-2 grid gap-1 font-mono text-xs"><div>{result.manifest_path}</div><div>components: {result.manifest.mcdf_files.length}</div><div>cache: {result.cache_dir}</div></div></SuccessBox>}
       </div>
-      {selectedPath && <p className="truncate font-mono text-xs text-gray-500" title={selectedPath}>{selectedPath}</p>}
-      {loading && <div className="flex justify-center py-6"><div className="h-8 w-8 animate-spin rounded-full border-2 border-[#e94560] border-t-transparent" /></div>}
-      <ErrorBox error={error} />
-      {info && (
-        <div className="rounded-xl bg-[#16213e] p-4 space-y-3">
-          <div className="text-xs uppercase tracking-wider text-gray-500">Extracted package</div>
-          <p className="text-sm text-gray-300">{info.description || "No description in this archive."}</p>
-          <div className="grid gap-3 md:grid-cols-2">
-            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Marketplace title, defaults to filename" className="rounded-lg border border-[#0f3460] bg-[#0a0a1a] px-3 py-2 text-sm text-gray-100 outline-none focus:border-[#e94560]" />
-            <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Marketplace description" className="rounded-lg border border-[#0f3460] bg-[#0a0a1a] px-3 py-2 text-sm text-gray-100 outline-none focus:border-[#e94560]" />
-          </div>
-          <button disabled={loading || !selectedPath} onClick={createManifest} className="rounded-lg bg-[#e94560] px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50">Create manifest + local chunks</button>
-        </div>
-      )}
-      {files.length > 0 && <ComponentTable files={files} title="Extracted internal files" />}
-      {result && <SuccessBox><div className="font-semibold">Manifest created after extraction</div><div className="mt-2 grid gap-1 font-mono text-xs"><div>{result.manifest_path}</div><div>components: {result.manifest.mcdf_files.length}</div><div>chunks: {result.manifest.chunks.length}</div></div></SuccessBox>}
-      {status && <ComponentTable files={status.files} title="Component online/cache status" />}
+      <aside className="right-stack"><ComponentSummary files={status?.files ?? files} /></aside>
+      <div className="wide-area">{files.length > 0 && <ComponentTable files={status?.files ?? files} title="Extracted internal files" />}</div>
     </div>
   );
 }
 
-function OnlineLibraryPanel({ addOperation, finishOperation }: { addOperation: (op: Omit<Operation, "id" | "startedAt" | "status">) => string; finishOperation: (id: string, patch: Partial<Operation>) => void }) {
+function OnlineLibraryPanel({ addOperation, finishOperation }: PanelProps) {
   const [locations, setLocations] = useState<OnlineLocation[]>([]);
   const [scanResults, setScanResults] = useState<OnlineLocationScanResult[]>([]);
   const [name, setName] = useState("");
@@ -421,6 +589,7 @@ function OnlineLibraryPanel({ addOperation, finishOperation }: { addOperation: (
   const [googleApiKey, setGoogleApiKey] = useState("");
   const [lastManifest, setLastManifest] = useState<ManifestBuildResult | null>(null);
   const [lastStatus, setLastStatus] = useState<ManifestStatus | null>(null);
+  const [lastPreview, setLastPreview] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -431,60 +600,122 @@ function OnlineLibraryPanel({ addOperation, finishOperation }: { addOperation: (
     try {
       const added = await invoke<OnlineLocation>("add_online_location", { name, url, sourceType, googleApiKey: googleApiKey.trim() || null });
       setLocations((current) => [...current.filter((item) => item.id !== added.id), added]);
-      setName(""); setUrl(""); setGoogleApiKey("");
-    } catch (e) { setError(String(e)); }
+      setName("");
+      setUrl("");
+      setGoogleApiKey("");
+    } catch (e) {
+      setError(String(e));
+    }
   };
   const removeLocation = async (id: string) => {
-    try { setLocations(await invoke<OnlineLocation[]>("remove_online_location", { id })); setScanResults((r) => r.filter((x) => x.source.id !== id)); }
-    catch (e) { setError(String(e)); }
+    try {
+      setLocations(await invoke<OnlineLocation[]>("remove_online_location", { id }));
+      setScanResults((r) => r.filter((x) => x.source.id !== id));
+    } catch (e) {
+      setError(String(e));
+    }
   };
   const scanAll = async () => {
     const opId = addOperation({ kind: "scan", label: "Scan online locations" });
-    setLoading(true); setError(null); setLastManifest(null); setLastStatus(null);
+    setLoading(true);
+    setError(null);
+    setLastManifest(null);
+    setLastStatus(null);
     try {
       const results = await invoke<OnlineLocationScanResult[]>("scan_online_locations");
       setScanResults(results);
       finishOperation(opId, { status: "done", message: `${results.reduce((n, r) => n + r.entries.length, 0)} entries` });
-    } catch (e) { finishOperation(opId, { status: "failed", message: String(e) }); setError(String(e)); }
-    finally { setLoading(false); }
+    } catch (e) {
+      finishOperation(opId, { status: "failed", message: String(e) });
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
   };
   const prepareForCentral = async (entry: OnlineLibraryEntry) => {
     const opId = addOperation({ kind: "download", label: `Download and inspect ${entry.mcdf_file_name}` });
-    setError(null); setLastManifest(null); setLastStatus(null);
+    setError(null);
+    setLastManifest(null);
+    setLastStatus(null);
+    setLastPreview(entry.image_url ?? null);
     try {
       const result = await invoke<ManifestBuildResult>("create_manifest_from_online_entry", { request: { mcdf_url: entry.mcdf_url, title: entry.name, description: `Imported from ${entry.source_name}`, image_url: entry.image_url ?? null } });
       setLastManifest(result);
       const status = await invoke<ManifestStatus>("inspect_manifest_status", { path: result.manifest_path });
       setLastStatus(status);
       finishOperation(opId, { status: "done", bytesDone: result.manifest.mcdf_size, message: `${result.manifest.mcdf_files.length} internal files` });
-    } catch (e) { finishOperation(opId, { status: "failed", message: String(e) }); setError(String(e)); }
+    } catch (e) {
+      finishOperation(opId, { status: "failed", message: String(e) });
+      setError(String(e));
+    }
   };
 
   const entryCount = scanResults.reduce((total, result) => total + result.entries.length, 0);
   return (
-    <div className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold text-gray-100">Online Library Locations</h2>
-        <p className="text-sm text-gray-400">External locations are discovery sources only. Files should be paired as <span className="font-mono text-gray-200">name.mcdf</span> plus <span className="font-mono text-gray-200">name.png/jpg/webp</span>. When selected, the MCDF is downloaded, extracted, and checked before central ingestion.</p>
+    <div className="screen-grid">
+      <HeroPreview title={lastManifest?.manifest.title || "Online Libraries"} subtitle={entryCount > 0 ? `${entryCount} paired MCDF/image entries` : "Add Drive folders or JSON indexes"} imageUrl={lastPreview} />
+      <div className="main-stack">
+        <Panel className="hero-copy">
+          <div className="eyebrow">External discovery</div>
+          <h1>Use online folders as libraries, not storage backends.</h1>
+          <p>Online locations are scanned for matching <span className="inline-code">name.mcdf</span> and <span className="inline-code">name.png/jpg/webp</span> pairs. Selecting one downloads the MCDF, extracts it, and prepares a local manifest for the central vault.</p>
+        </Panel>
+        <Panel>
+          <div className="form-grid library-form">
+            <Field value={name} onChange={(e) => setName(e.target.value)} placeholder="Library name" />
+            <Field value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Google Drive folder URL or index.json URL" />
+            <SelectField value={sourceType} onChange={(e) => setSourceType(e.target.value as OnlineLocationType)}>
+              <option value="generic_json_index">Generic JSON index</option>
+              <option value="google_drive_folder">Google Drive folder</option>
+            </SelectField>
+          </div>
+          {sourceType === "google_drive_folder" && <Field value={googleApiKey} onChange={(e) => setGoogleApiKey(e.target.value)} placeholder="Google Drive API key" />}
+          <div className="hero-actions">
+            <PrimaryButton disabled={!name.trim() || !url.trim()} onClick={addLocation}>Add location</PrimaryButton>
+            <GhostButton disabled={locations.length === 0 || loading} onClick={scanAll}>{loading ? "Scanning…" : "Scan online library"}</GhostButton>
+          </div>
+        </Panel>
+        <ErrorBox error={error} />
+        {locations.length > 0 && (
+          <Panel>
+            <div className="panel-title-row"><div><div className="eyebrow">Sources</div><h2>Configured locations</h2></div><span className="status-pill status-neutral">{locations.length}</span></div>
+            <div className="source-list">
+              {locations.map((location) => (
+                <div key={location.id} className="source-row">
+                  <div><strong>{location.name}</strong><span>{location.source_type.replace(/_/g, " ")}</span><code>{location.url}</code></div>
+                  <button onClick={() => removeLocation(location.id)}>remove</button>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        )}
       </div>
-      <div className="rounded-xl bg-[#16213e] p-4 space-y-3">
-        <div className="grid gap-3 md:grid-cols-[1fr_1fr_220px]">
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Library name" className="rounded-lg border border-[#0f3460] bg-[#0a0a1a] px-3 py-2 text-gray-100 outline-none focus:border-[#e94560]" />
-          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Google Drive folder URL or index.json URL" className="rounded-lg border border-[#0f3460] bg-[#0a0a1a] px-3 py-2 text-gray-100 outline-none focus:border-[#e94560]" />
-          <select value={sourceType} onChange={(e) => setSourceType(e.target.value as OnlineLocationType)} className="rounded-lg border border-[#0f3460] bg-[#0a0a1a] px-3 py-2 text-gray-100 outline-none focus:border-[#e94560]"><option value="generic_json_index">Generic JSON index</option><option value="google_drive_folder">Google Drive folder</option></select>
-        </div>
-        {sourceType === "google_drive_folder" && <input value={googleApiKey} onChange={(e) => setGoogleApiKey(e.target.value)} placeholder="Google Drive API key" className="w-full rounded-lg border border-[#0f3460] bg-[#0a0a1a] px-3 py-2 text-gray-100 outline-none focus:border-[#e94560]" />}
-        <div className="flex flex-wrap gap-2">
-          <button disabled={!name.trim() || !url.trim()} onClick={addLocation} className="rounded-lg bg-[#e94560] px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50">Add location</button>
-          <button disabled={locations.length === 0 || loading} onClick={scanAll} className="rounded-lg border border-[#0f3460] px-4 py-2 text-sm font-medium text-gray-200 hover:bg-[#0f3460]/50 disabled:cursor-not-allowed disabled:opacity-50">{loading ? "Scanning…" : "Scan online library"}</button>
-        </div>
+      <aside className="right-stack"><ComponentSummary files={lastStatus?.files ?? []} /></aside>
+      <div className="wide-area">
+        {scanResults.map((result) => (
+          <Panel key={result.source.id}>
+            <div className="panel-title-row">
+              <div><div className="eyebrow">{result.source.name}</div><h2>{result.entries.length} complete pairs</h2></div>
+              <span className="status-pill status-warn">{result.warnings.length} warnings</span>
+            </div>
+            {result.warnings.map((w, i) => <div key={i} className="alert alert-warn">{w}</div>)}
+            <div className="mod-card-grid">
+              {result.entries.map((entry) => (
+                <article key={`${entry.source_id}-${entry.mcdf_url}`} className="mod-card">
+                  <div className="mod-image">{entry.image_url ? <img src={entry.image_url} alt={entry.name} /> : <span>◇</span>}</div>
+                  <div className="mod-body">
+                    <strong>{entry.name}</strong>
+                    <span>{entry.provider} · {entry.mcdf_file_name}</span>
+                    <PrimaryButton onClick={() => prepareForCentral(entry)}>Download, extract, prepare</PrimaryButton>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </Panel>
+        ))}
+        {lastManifest && <SuccessBox><div className="font-semibold">Online MCDF downloaded and extracted</div><div className="mt-2 font-mono text-xs">{lastManifest.manifest_path}</div></SuccessBox>}
+        {lastStatus && <ComponentTable files={lastStatus.files} title="Online MCDF internal files and status" />}
       </div>
-      <ErrorBox error={error} />
-      {locations.length > 0 && <div className="rounded-xl bg-[#16213e] p-4"><div className="mb-2 text-xs uppercase tracking-wider text-gray-500">Configured locations</div>{locations.map((location) => <div key={location.id} className="flex items-center justify-between border-t border-[#0f3460] py-2 first:border-t-0"><div><div className="text-sm text-gray-100">{location.name}</div><div className="truncate font-mono text-xs text-gray-500">{location.url}</div></div><button onClick={() => removeLocation(location.id)} className="text-xs text-red-300 hover:text-red-200">remove</button></div>)}</div>}
-      {scanResults.length > 0 && <div className="text-sm text-gray-400">Found {entryCount} complete MCDF/image pairs.</div>}
-      {scanResults.map((result) => <div key={result.source.id} className="space-y-3 rounded-xl bg-[#16213e] p-4"><div className="flex items-center justify-between"><div><div className="font-semibold text-gray-100">{result.source.name}</div><div className="text-xs text-gray-500">{result.entries.length} entries · {result.warnings.length} warnings</div></div></div>{result.warnings.map((w, i) => <div key={i} className="rounded bg-yellow-950/40 p-2 text-xs text-yellow-200">{w}</div>)}<div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{result.entries.map((entry) => <div key={`${entry.source_id}-${entry.mcdf_url}`} className="overflow-hidden rounded-lg border border-[#0f3460] bg-[#0a0a1a]">{entry.image_url && <img src={entry.image_url} alt={entry.name} className="h-40 w-full object-cover" />}<div className="space-y-2 p-3"><div className="font-semibold text-gray-100">{entry.name}</div><div className="font-mono text-xs text-gray-500">{entry.mcdf_file_name}</div><button onClick={() => prepareForCentral(entry)} className="w-full rounded-lg bg-[#e94560] px-3 py-2 text-sm font-medium text-white hover:bg-[#e94560]/80">Download, extract, prepare</button></div></div>)}</div></div>)}
-      {lastManifest && <SuccessBox><div className="font-semibold">Online MCDF downloaded and extracted</div><div className="mt-2 font-mono text-xs">{lastManifest.manifest_path}</div></SuccessBox>}
-      {lastStatus && <ComponentTable files={lastStatus.files} title="Online MCDF internal files and status" />}
     </div>
   );
 }
@@ -498,20 +729,62 @@ function InspectPanel() {
   const handleOpen = async () => {
     const selected = await open({ multiple: false, filters: [{ name: "MCDF", extensions: ["mcdf"] }] });
     if (!selected) return;
-    setFilePath(selected as string); setLoading(true); setError(null);
+    setFilePath(selected as string);
+    setLoading(true);
+    setError(null);
     try {
-      const [mcdf, fileInfos] = await Promise.all([invoke<MCDFInfo>("scan_mcdf", { path: selected }), invoke<ExtractedFileInfo[]>("inspect_mcdf_files", { path: selected })]);
-      setInfo(mcdf); setFiles(fileInfos);
-    } catch (e) { setInfo(null); setFiles([]); setError(String(e)); }
-    finally { setLoading(false); }
+      const [mcdf, fileInfos] = await Promise.all([
+        invoke<MCDFInfo>("scan_mcdf", { path: selected }),
+        invoke<ExtractedFileInfo[]>("inspect_mcdf_files", { path: selected }),
+      ]);
+      setInfo(mcdf);
+      setFiles(fileInfos);
+    } catch (e) {
+      setInfo(null);
+      setFiles([]);
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
   };
-  return <div className="space-y-4"><div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold text-gray-100">Inspect MCDF</h2><p className="text-sm text-gray-400">Extract package metadata and internal file details without creating a vault manifest.</p></div><button onClick={handleOpen} className="rounded-lg bg-[#e94560] px-4 py-2 text-sm font-medium text-white hover:bg-[#e94560]/80">Choose File…</button></div>{filePath && <p className="truncate font-mono text-xs text-gray-500" title={filePath}>{filePath}</p>}{loading && <div className="flex justify-center py-12"><div className="h-8 w-8 animate-spin rounded-full border-2 border-[#e94560] border-t-transparent" /></div>}<ErrorBox error={error} />{info && !loading && <><div className="rounded-xl bg-[#16213e] p-4"><div className="text-xs uppercase tracking-wider text-gray-500">Description</div><p className="mt-2 text-sm text-gray-300">{info.description || "No description in this archive."}</p></div><ComponentTable files={files} title="Extracted internal files" /></>}{!info && !loading && !error && <div className="rounded-xl bg-[#16213e] p-8 text-center text-gray-500">Select an MCDF file to inspect its compiled contents.</div>}</div>;
+  return (
+    <div className="screen-grid">
+      <HeroPreview title="Inspect Bundle" subtitle={filePath ? filePath.split(/[\\/]/).pop() || filePath : "Read MCDF internals only"} />
+      <div className="main-stack">
+        <Panel className="hero-copy">
+          <div className="eyebrow">Compiled package reader</div>
+          <h1>See the files inside an MCDF without preparing upload.</h1>
+          <p>This view extracts metadata and payload file records only. It does not create local chunks or central manifests.</p>
+          <div className="hero-actions"><PrimaryButton onClick={handleOpen}>Choose File…</PrimaryButton></div>
+        </Panel>
+        {filePath && <div className="path-chip" title={filePath}>{filePath}</div>}
+        {loading && <div className="loader" />}
+        <ErrorBox error={error} />
+        {info && !loading && <Panel><div className="eyebrow">Description</div><p>{info.description || "No description in this archive."}</p></Panel>}
+      </div>
+      <aside className="right-stack"><ComponentSummary files={files} /></aside>
+      <div className="wide-area">{files.length > 0 ? <ComponentTable files={files} title="Extracted internal files" /> : !loading && !error && <Panel><p className="empty-small">Select an MCDF file to inspect its compiled contents.</p></Panel>}</div>
+    </div>
+  );
 }
 
 function SettingsPanel() {
   const [cacheDir, setCacheDir] = useState("loading…");
   useEffect(() => { invoke<string>("get_cache_dir").then(setCacheDir).catch((e) => setCacheDir(String(e))); }, []);
-  return <div className="space-y-4"><div><h2 className="text-lg font-semibold text-gray-100">Settings</h2><p className="text-sm text-gray-400">Current local paths and build details.</p></div><div className="rounded-xl bg-[#16213e] p-4"><div className="text-xs uppercase tracking-wider text-gray-500">Local cache directory</div><div className="mt-2 break-all font-mono text-sm text-gray-200">{cacheDir}</div><p className="mt-3 text-sm text-gray-400">Override with MCDF_MARKETPLACE_HOME when testing builds or CI behavior.</p></div></div>;
+  return (
+    <div className="settings-screen">
+      <Panel className="hero-copy">
+        <div className="eyebrow">Local settings</div>
+        <h1>Cache and build details</h1>
+        <p>The browser stays local-first. Server endpoints are optional; direct manifest rebuilds still work when chunks are cached or have direct URLs.</p>
+      </Panel>
+      <Panel>
+        <div className="eyebrow">Local cache directory</div>
+        <div className="path-block">{cacheDir}</div>
+        <p>Override with <span className="inline-code">MCDF_MARKETPLACE_HOME</span> when testing builds or CI behavior.</p>
+      </Panel>
+    </div>
+  );
 }
 
 function App() {
@@ -528,20 +801,52 @@ function App() {
     setOperations((current) => current.map((op) => op.id === id ? { ...op, ...patch, endedAt: Date.now() } : op));
   };
   const panelProps = useMemo(() => ({ addOperation, finishOperation }), []);
+  const activeLabel = navSections.flatMap((section) => section.items).find((item) => item.id === activeTab)?.label ?? "MCDF Browser";
   return (
-    <div className="min-h-screen bg-[#1a1a2e] text-gray-100">
-      <header className="flex items-center justify-between border-b border-[#0f3460] bg-[#16213e] px-6 py-4">
-        <div className="flex items-center gap-3"><h1 className="text-xl font-bold text-[#e94560]">MCDF Marketplace</h1><span className="text-xs text-gray-400">v{appVersion}</span></div>
-        <div className="flex items-center gap-3"><ActivityIndicator operations={operations} /><div className="rounded-full bg-[#e94560] px-3 py-1 text-xs font-bold text-white">local-first</div></div>
-      </header>
-      <nav className="border-b border-[#0f3460] bg-[#16213e] px-6"><div className="flex gap-1 overflow-x-auto">{tabs.map((tab) => <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`whitespace-nowrap px-4 py-3 text-sm font-medium transition-colors ${activeTab === tab.id ? "border-b-2 border-[#e94560] text-[#e94560]" : "text-gray-400 hover:text-gray-200"}`}>{tab.label}</button>)}</div></nav>
-      <main className="p-6">
-        {activeTab === "marketplace" && <MarketplacePanel {...panelProps} />}
-        {activeTab === "library" && <OnlineLibraryPanel {...panelProps} />}
-        {activeTab === "prepare" && <PreparePanel {...panelProps} />}
-        {activeTab === "inspect" && <InspectPanel />}
-        {activeTab === "settings" && <SettingsPanel />}
-      </main>
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-mark">✧</div>
+          <div><strong>MCDF Browser</strong><span>Shape your fantasy. Look how you feel.</span></div>
+        </div>
+        <nav className="side-nav">
+          {navSections.map((section) => (
+            <div key={section.title} className="nav-section">
+              <div className="nav-title">{section.title}</div>
+              {section.items.map((item) => (
+                <button key={item.id} onClick={() => setActiveTab(item.id)} className={activeTab === item.id ? "nav-item active" : "nav-item"}>
+                  <span className="nav-icon">{item.icon}</span>
+                  <span><strong>{item.label}</strong><small>{item.hint}</small></span>
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+        <div className="profile-card">
+          <span>Active profile</span>
+          <strong>Local Vault</strong>
+          <small>v{appVersion}</small>
+        </div>
+      </aside>
+      <div className="content-shell">
+        <header className="topbar">
+          <div>
+            <span className="eyebrow">{activeLabel}</span>
+            <h1>Component-aware MCDF library</h1>
+          </div>
+          <div className="topbar-actions">
+            <ActivityIndicator operations={operations} />
+            <span className="mode-pill">local-first</span>
+          </div>
+        </header>
+        <main className="content-area">
+          {activeTab === "marketplace" && <MarketplacePanel {...panelProps} />}
+          {activeTab === "library" && <OnlineLibraryPanel {...panelProps} />}
+          {activeTab === "prepare" && <PreparePanel {...panelProps} />}
+          {activeTab === "inspect" && <InspectPanel />}
+          {activeTab === "settings" && <SettingsPanel />}
+        </main>
+      </div>
     </div>
   );
 }

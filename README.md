@@ -97,3 +97,12 @@ An MCDF is treated as a compiled package. Before the app prepares an upload or c
 - central status placeholder
 
 The manifest still chunks the compiled MCDF as a transport artifact. The internal component list lets the optional central service check which real contained files are already present, missing, queued, or only available through an external online package.
+
+## UI direction
+
+The current UI is a fantasy-themed, component-aware MCDF browser inspired by the supplied artist impression. It uses a left navigation shell, glowing glass panels, preview cards, component summaries, and a top-right transfer indicator.
+
+The app does not present fake live body sliders. MCDF files are treated as compiled bundles: they are inspected first, then their internal files are grouped and shown with local/online/missing status before manifest creation or rebuild actions.
+
+See `docs/UI_DESIGN.adoc` for the design rules.
+

@@ -1,0 +1,77 @@
+= MCDF Browser UI Direction
+:toc:
+
+== Goal
+
+The application should feel like a fantasy-oriented MCDF library and vault browser, while staying technically honest about what the app can do today.
+
+The first implementation target is not a live character editor. It is a component-aware MCDF browser:
+
+* open or download an MCDF;
+* extract the compiled package;
+* show the internal files and component groups;
+* show local, online, missing, queued, or external-only status;
+* create a manifest and cache chunks only after extraction;
+* rebuild from a manifest as an action, not as a main navigation section.
+
+== Visual language
+
+The current theme intentionally follows the provided artist impression:
+
+* deep violet background;
+* pink/purple gradient accents;
+* glass panels;
+* glowing card borders;
+* left-side navigation;
+* preview-first layout;
+* marketplace cards using supplied preview images;
+* top-right transfer indicator for uploads/downloads.
+
+== What is shown instead of fake body sliders
+
+The design inspiration includes body sliders and character controls. The MCDF Browser should not show fake controls unless they modify real data.
+
+Instead, the app shows extracted component groups:
+
+* Model;
+* Texture;
+* Material;
+* Animation;
+* Skeleton;
+* Tail / Feature;
+* Hair;
+* Face;
+* Other.
+
+This lets users understand the contents of a compiled MCDF without pretending that the package can already be edited as a live body-mod editor.
+
+== Transfer UX
+
+Download/rebuild is not a primary menu item. It appears as an action on the relevant manifest or online-library entry.
+
+The top-right activity indicator summarizes:
+
+* active jobs;
+* approximate speed when byte counts are known;
+* done jobs;
+* failed jobs;
+* recent upload/download/scan/build messages.
+
+== Online library UX
+
+Online locations are discovery sources, not chunk storage backends. They should contain paired files:
+
+[source,text]
+----
+Example Character.mcdf
+Example Character.png
+----
+
+Supported image extensions:
+
+* .png
+* .jpg
+* .jpeg
+* .webp
+
+When the user selects an online entry, the app downloads the MCDF, extracts it, creates a local manifest, and displays the internal files and status.
