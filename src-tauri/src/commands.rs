@@ -1,7 +1,6 @@
 use crate::mcdf::{ExtractedFile, MCDFParser, MareCharaFileData};
 use std::fs::File;
-use std::io::{BufReader, Cursor};
-use std::path::Path;
+use std::io::BufReader;
 use tauri::command;
 
 #[command]
