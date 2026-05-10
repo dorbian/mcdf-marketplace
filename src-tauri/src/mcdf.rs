@@ -1,18 +1,20 @@
-//! MCDF file parser and builder
-//! MCDF = MareCharaDataFile (FFXIV character format)
+//! MCDF file parser and builder.
 //!
-//! File format:
+//! MCDF = MareCharaDataFile.
+//!
+//! Format used by this parser:
 //!   4 bytes: "MCDF" magic
 //!   1 byte: version (currently 1)
-//!   4 bytes: JSON metadata length (little-endian int32)
+//!   4 bytes: JSON metadata length (little-endian u32)
 //!   N bytes: UTF-8 JSON metadata
-//!   Remaining: binary payload (files concatenated sequentially)
+//!   Remaining bytes: binary file payload, concatenated in metadata file order
 //!
-//! FFXIV on-disk files may be gzip-compressed; this parser auto-detects and decompresses them.
+//! Some files may be gzip-compressed. The parser auto-detects gzip and parses the
+//! decompressed data.
 
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{Read, Write};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileData {
@@ -23,6 +25,7 @@ pub struct FileData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MareCharaFileData {
+    #[serde(default)]
     pub description: String,
     #[serde(default)]
     pub glamourer_data: String,
@@ -30,6 +33,7 @@ pub struct MareCharaFileData {
     pub customize_plus_data: String,
     #[serde(default)]
     pub manipulation_data: String,
+    #[serde(default)]
     pub files: Vec<FileData>,
     #[serde(default)]
     pub file_swaps: Vec<FileSwap>,
@@ -41,141 +45,146 @@ pub struct FileSwap {
     pub file_swap_path: String,
 }
 
-#[derive(Debug)]
-pub struct MCDFError {
-    pub message: String,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedFileInfo {
+    pub index: usize,
+    pub game_paths: Vec<String>,
+    pub length: u32,
+    pub hash: String,
+    pub offset: u64,
+    pub blake3: String,
 }
 
-impl std::fmt::Display for MCDFError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MCDFError: {}", self.message)
-    }
-}
+#[derive(Debug, thiserror::Error)]
+pub enum MCDFError {
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
 
-impl std::error::Error for MCDFError {}
+    #[error("JSON parse error: {0}")]
+    Json(#[from] serde_json::Error),
 
-impl From<std::io::Error> for MCDFError {
-    fn from(e: std::io::Error) -> Self {
-        MCDFError { message: e.to_string() }
-    }
-}
+    #[error("File too small ({actual} bytes, need at least {needed})")]
+    TooSmall { actual: usize, needed: usize },
 
-impl From<serde_json::Error> for MCDFError {
-    fn from(e: serde_json::Error) -> Self {
-        MCDFError {
-            message: format!("JSON parse error: {}", e),
-        }
-    }
+    #[error("Invalid MCDF magic bytes: {0}; expected MCDF")]
+    InvalidMagic(String),
+
+    #[error("Unsupported MCDF version: {0}")]
+    UnsupportedVersion(u8),
+
+    #[error("Invalid MCDF payload: {0}")]
+    InvalidPayload(String),
+
+    #[error("gzip decompression failed: {0}")]
+    Gzip(String),
 }
 
 pub struct MCDFParser;
 
 impl MCDFParser {
-    /// Parse an MCDF file, auto-detecting gzip compression used by FFXIV on-disk storage.
-    pub fn parse<R: std::io::Read>(reader: &mut R) -> Result<(MareCharaFileData, Vec<u8>), MCDFError> {
-        // Peek at the first 4 bytes to detect gzip compression
-        let mut peek = [0u8; 4];
-        let n = reader.read(&mut peek).map_err(|e| MCDFError { message: e.to_string() })?;
-        if n < 4 {
-            return Err(MCDFError {
-                message: format!("File too small ({} bytes)", n),
+    pub fn parse<R: Read>(reader: &mut R) -> Result<(MareCharaFileData, Vec<u8>), MCDFError> {
+        let mut all_data = Vec::new();
+        reader.read_to_end(&mut all_data)?;
+
+        if all_data.len() < 4 {
+            return Err(MCDFError::TooSmall {
+                actual: all_data.len(),
+                needed: 4,
             });
         }
 
-        // If gzip-compressed (FFXIV stores MCDF gzipped on disk), decompress then parse
-        if &peek[..3] == b"\x1f\x8b\x08" {
-            let mut all_data = peek.to_vec();
-            std::io::Read::read_to_end(reader, &mut all_data)
-                .map_err(|e| MCDFError { message: e.to_string() })?;
+        if all_data.starts_with(&[0x1f, 0x8b, 0x08]) {
             let mut gz = GzDecoder::new(&all_data[..]);
             let mut decompressed = Vec::new();
-            std::io::Read::read_to_end(&mut gz, &mut decompressed)
-                .map_err(|e| MCDFError {
-                    message: format!("gzip decompression failed: {}", e),
-                })?;
+            gz.read_to_end(&mut decompressed)
+                .map_err(|e| MCDFError::Gzip(e.to_string()))?;
             return Self::parse_from_slice(&decompressed);
         }
 
-        // Otherwise read rest of file and parse as raw MCDF
-        let mut all_data = peek.to_vec();
-        std::io::Read::read_to_end(reader, &mut all_data)
-            .map_err(|e| MCDFError { message: e.to_string() })?;
         Self::parse_from_slice(&all_data)
     }
 
-    /// Parse from an already-in-memory byte buffer (slice-based, no Read trait needed)
-    fn parse_from_slice(data: &[u8]) -> Result<(MareCharaFileData, Vec<u8>), MCDFError> {
+    pub(crate) fn parse_from_slice(
+        data: &[u8],
+    ) -> Result<(MareCharaFileData, Vec<u8>), MCDFError> {
         if data.len() < 9 {
-            return Err(MCDFError {
-                message: format!("File too small ({} bytes, need at least 9)", data.len()),
+            return Err(MCDFError::TooSmall {
+                actual: data.len(),
+                needed: 9,
             });
         }
 
-        // Magic (4 bytes)
-        let (rest, magic) = data.split_at(4);
+        let (magic, rest) = data.split_at(4);
         if magic != b"MCDF" {
-            return Err(MCDFError {
-                message: format!(
-                    "Invalid magic bytes: {:02x?}{:02x?}{:02x?}{:02x?} (expected 4d434446 'MCDF')",
-                    magic[0], magic[1], magic[2], magic[3]
-                ),
-            });
+            return Err(MCDFError::InvalidMagic(format!(
+                "{:02x?} {:02x?} {:02x?} {:02x?}",
+                magic[0], magic[1], magic[2], magic[3]
+            )));
         }
 
-        // Version (1 byte)
         let version = rest[0];
         if version != 1 {
-            return Err(MCDFError {
-                message: format!("Unsupported version: {}", version),
-            });
+            return Err(MCDFError::UnsupportedVersion(version));
         }
 
-        // JSON length (4 bytes, little-endian)
         let json_len = u32::from_le_bytes([rest[1], rest[2], rest[3], rest[4]]) as usize;
         let rest = &rest[5..];
 
         if rest.len() < json_len {
-            return Err(MCDFError {
-                message: format!(
-                    "File too small (JSON claims {} bytes, {} available)",
-                    json_len,
-                    rest.len()
-                ),
-            });
+            return Err(MCDFError::InvalidPayload(format!(
+                "JSON claims {json_len} bytes, but only {} bytes remain",
+                rest.len()
+            )));
         }
 
         let (json_data, binary_payload) = rest.split_at(json_len);
         let metadata: MareCharaFileData = serde_json::from_slice(json_data)?;
 
+        let expected_payload_len: usize = metadata.files.iter().map(|f| f.length as usize).sum();
+        if binary_payload.len() < expected_payload_len {
+            return Err(MCDFError::InvalidPayload(format!(
+                "metadata expects {expected_payload_len} payload bytes, but file has {} bytes",
+                binary_payload.len()
+            )));
+        }
+
         Ok((metadata, binary_payload.to_vec()))
     }
 
-    /// Extract individual files from the binary payload
-    pub fn extract_files(
+    pub fn extract_file_infos(
         metadata: &MareCharaFileData,
         binary_payload: &[u8],
-    ) -> Vec<ExtractedFile> {
+    ) -> Result<Vec<ExtractedFileInfo>, MCDFError> {
         let mut files = Vec::new();
         let mut offset = 0usize;
 
-        for file_data in &metadata.files {
-            let end = offset + file_data.length as usize;
+        for (index, file_data) in metadata.files.iter().enumerate() {
+            let end = offset
+                .checked_add(file_data.length as usize)
+                .ok_or_else(|| MCDFError::InvalidPayload("file offset overflow".to_string()))?;
+
             if end > binary_payload.len() {
-                break;
+                return Err(MCDFError::InvalidPayload(format!(
+                    "file #{index} exceeds payload length: end {end}, payload {}",
+                    binary_payload.len()
+                )));
             }
-            let data = binary_payload[offset..end].to_vec();
-            files.push(ExtractedFile {
+
+            let blake3 = blake3::hash(&binary_payload[offset..end]).to_hex().to_string();
+            files.push(ExtractedFileInfo {
+                index,
                 game_paths: file_data.game_paths.clone(),
-                data,
+                length: file_data.length,
                 hash: file_data.hash.clone(),
+                offset: offset as u64,
+                blake3,
             });
             offset = end;
         }
 
-        files
+        Ok(files)
     }
 
-    /// Rebuild MCDF from metadata + files
     pub fn rebuild<W: Write>(
         writer: &mut W,
         metadata: &MareCharaFileData,
@@ -198,9 +207,38 @@ impl MCDFParser {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtractedFile {
-    pub game_paths: Vec<String>,
-    pub data: Vec<u8>,
-    pub hash: String,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_minimal_mcdf() {
+        let metadata = MareCharaFileData {
+            description: "test".to_string(),
+            glamourer_data: String::new(),
+            customize_plus_data: String::new(),
+            manipulation_data: String::new(),
+            files: vec![],
+            file_swaps: vec![],
+        };
+
+        let json = serde_json::to_vec(&metadata).unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MCDF");
+        bytes.push(1);
+        bytes.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&json);
+
+        let (parsed, payload) = MCDFParser::parse_from_slice(&bytes).unwrap();
+        assert_eq!(parsed.description, "test");
+        assert!(payload.is_empty());
+    }
+
+    #[test]
+    fn rejects_bad_magic() {
+        let mut bytes = b"BAD!".to_vec();
+        bytes.push(1);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        assert!(MCDFParser::parse_from_slice(&bytes).is_err());
+    }
 }

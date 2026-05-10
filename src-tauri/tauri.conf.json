@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: https:; style-src 'self' 'unsafe-inline'; connect-src 'self' https: http://localhost:*"
     }
   },
   "bundle": {
@@ -33,21 +33,5 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
-  },
-  "plugins": {
-    "fs": {
-      "scope": {
-        "allow": ["$DOWNLOAD/*", "$HOME/.mcdf/*"],
-        "deny": []
-      }
-    },
-    "http": {
-      "scope": {
-        "allow": [{ "url": "http://localhost:*" }, { "url": "https://*/*" }]
-      }
-    },
-    "shell": {
-      "open": true
-    }
   }
 }

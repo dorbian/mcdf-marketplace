@@ -1,37 +1,83 @@
 # MCDF Marketplace
 
-A desktop marketplace for browsing, uploading, and downloading FFXIV character files (MCDF).
+Local-first desktop marketplace tooling for MCDF character archives.
 
-## Features
-- Browse public character archives
-- Upload MCDF files to the vault
-- Download and rebuild MCDF files
-- Set consent flags for your characters
-- Search and filter by race, gender, tags
+This repository contains a Tauri v2 desktop app with a React frontend and Rust backend. The current implementation focuses on the portable file/archive layer that the marketplace needs before the optional server pieces are added.
+
+## Current features
+
+- Inspect local `.mcdf` files.
+- Parse raw or gzip-compressed MCDF files.
+- Show MCDF metadata and file layout without sending raw file bytes into the webview.
+- Create a local vault manifest from an MCDF.
+- Split MCDF files into BLAKE3-addressed chunks.
+- Store chunks in a local cache under `~/.mcdf-marketplace`.
+- Rebuild an MCDF from a manifest.
+- Rebuild fully offline when chunks already exist locally.
+- Download missing chunks directly from manifest `attachment_url` values when available.
+
+## Why downloads work without a server
+
+A complete manifest is enough to rebuild an MCDF. The app checks the local chunk cache first. If a chunk is missing and the manifest contains a direct `attachment_url`, the app downloads that chunk directly, verifies its BLAKE3 hash and size, and then rebuilds the final MCDF.
+
+The optional server is only needed for search, Discord auth, upload coordination, moderation, and stable index hosting. See `docs/API_ENDPOINTS.adoc`.
 
 ## Development
 
-### Prerequisites
-- Node.js 20+
-- Rust 1.75+
-- pnpm
-
-### Setup
 ```bash
 pnpm install
-cargo tauri dev
+pnpm tauri dev
 ```
 
-### Architecture
-- Frontend: React + TypeScript + TailwindCSS
-- Backend: Rust (Tauri)
-- MCDF parsing: custom Rust implementation
-- Auth: Discord OAuth
+## Build
 
-## Tech Stack
-- Tauri 2.x
-- React 18
-- TypeScript 5
-- TailwindCSS 3
-- React Query
-- Discord OAuth 2
+```bash
+pnpm install
+pnpm tauri build
+```
+
+GitHub release builds are handled by `.github/workflows/release.yml`.
+
+## Local cache
+
+Default cache path:
+
+```text
+~/.mcdf-marketplace
+```
+
+Override it for testing:
+
+```bash
+MCDF_MARKETPLACE_HOME=/tmp/mcdf-marketplace pnpm tauri dev
+```
+
+## Repository hygiene
+
+Do not commit generated build or dependency directories:
+
+- `node_modules/`
+- `dist/`
+- `src-tauri/target/`
+
+
+
+## Online library locations
+
+The app supports external discovery locations that are not used as chunk storage. This is intended for places such as public Google Drive folders or simple JSON indexes where creators already host a finished `.mcdf` and a preview image.
+
+Required naming convention:
+
+```text
+My Character.mcdf
+My Character.png
+```
+
+The base filename must match. Supported image extensions are `.png`, `.jpg`, `.jpeg`, and `.webp`.
+
+Supported source types:
+
+- `Generic JSON index`: an HTTP JSON document containing `files[]`, `entries[]`, or a top-level array. Each item should contain `name` and `url` or `download_url`.
+- `Google Drive folder`: a public folder URL or folder ID. Serverless scanning uses the Google Drive files API and therefore requires a Drive API key in the app or `GOOGLE_DRIVE_API_KEY` while testing.
+
+Online library entries can be prepared for the central system by downloading the MCDF locally, creating a vault manifest, chunking it into the local BLAKE3 cache, and recording the original MCDF URL plus thumbnail URL in the manifest source metadata.

@@ -1,0 +1,534 @@
+= MCDF Marketplace Optional Server API v0.1
+:toc:
+
+The desktop application is designed to work without this server. A user can open a vault manifest JSON file and rebuild an MCDF from local cached chunks or from direct `attachment_url` values in the manifest.
+
+The server adds convenience features only:
+
+* Discord login and membership checks.
+* Searchable marketplace index.
+* Upload preflight and missing-chunk detection.
+* Moderation state.
+* Stable manifest URLs.
+* Optional Discord storage coordination.
+
+== Principles
+
+* Chunks are content-addressed by BLAKE3.
+* The client must verify every downloaded chunk against the manifest hash.
+* The server must never be required to rebuild a file when the manifest already contains direct chunk URLs.
+* Uploads should be deduplicated by chunk hash.
+* Server responses should be JSON unless explicitly serving a binary chunk.
+
+== Manifest download without a server
+
+A complete manifest is enough for download/rebuild when each missing chunk has either:
+
+* a `local_path` that exists on the local machine, or
+* an `attachment_url` that can be downloaded directly by the client.
+
+The client rebuild flow is:
+
+. Read manifest JSON.
+. Sort `chunks` by `index`.
+. For each chunk, check local cache by `hash_blake3`.
+. If missing locally, download `attachment_url`.
+. Verify chunk BLAKE3 and size.
+. Append chunks to output MCDF.
+. Verify final MCDF BLAKE3 against `mcdf_hash_blake3`.
+
+== Core endpoints
+
+=== GET /v1/health
+
+Returns service health and API version.
+
+.Response
+[source,json]
+----
+{
+  "ok": true,
+  "api_version": "v0.1",
+  "service": "mcdf-marketplace"
+}
+----
+
+=== GET /v1/index
+
+Returns a compact marketplace index. This should stay small enough for quick browsing.
+
+.Query parameters
+[cols="1,1,3"]
+|===
+|Name |Required |Description
+
+|`q`
+|no
+|Free text search.
+
+|`tag`
+|no
+|Filter by tag. May be repeated.
+
+|`limit`
+|no
+|Maximum entries, default 50.
+
+|`cursor`
+|no
+|Pagination cursor.
+|===
+
+.Response
+[source,json]
+----
+{
+  "entries": [
+    {
+      "archive_id": "mcdf_4db2f1c0348aa001",
+      "title": "Example Character",
+      "description": "Short public description",
+      "tags": ["casual", "avatar"],
+      "thumbnail_url": null,
+      "manifest_url": "https://example.org/v1/archives/mcdf_4db2f1c0348aa001/manifest",
+      "author_display_name": "ArtistName",
+      "created_at": "2026-05-10T00:00:00Z",
+      "updated_at": "2026-05-10T00:00:00Z"
+    }
+  ],
+  "next_cursor": null
+}
+----
+
+=== GET /v1/archives/{archive_id}
+
+Returns public metadata for one archive. This is not the full manifest unless the implementation chooses to inline it.
+
+.Response
+[source,json]
+----
+{
+  "archive_id": "mcdf_4db2f1c0348aa001",
+  "title": "Example Character",
+  "description": "Short public description",
+  "tags": ["casual", "avatar"],
+  "thumbnail_url": null,
+  "manifest_url": "https://example.org/v1/archives/mcdf_4db2f1c0348aa001/manifest",
+  "moderation_state": "published"
+}
+----
+
+=== GET /v1/archives/{archive_id}/manifest
+
+Returns a complete `VaultManifest`. This endpoint is enough for the client to download and rebuild, provided the manifest includes direct chunk URLs or the chunks already exist in local cache.
+
+.Response
+[source,json]
+----
+{
+  "schema_version": 1,
+  "archive_id": "mcdf_4db2f1c0348aa001",
+  "title": "Example Character",
+  "description": "Short public description",
+  "original_filename": "example.mcdf",
+  "mcdf_hash_blake3": "4db2f1c0348aa001...",
+  "mcdf_size": 12345678,
+  "chunk_size": 8388608,
+  "chunks": [
+    {
+      "index": 0,
+      "hash_blake3": "ab12...",
+      "size": 8388608,
+      "offset": 0,
+      "attachment_url": "https://cdn.discordapp.com/attachments/.../chunk_00000.bin",
+      "discord_channel_id": "123",
+      "discord_message_id": "456",
+      "discord_attachment_id": "789"
+    }
+  ],
+  "parity": [],
+  "source": {
+    "server_base_url": "https://example.org",
+    "index_url": "https://example.org/v1/index"
+  }
+}
+----
+
+== Authentication endpoints
+
+Discord login is only needed for upload, private entries, moderation, or membership-restricted archives. Public manifest download should work without auth.
+
+=== GET /v1/auth/discord/start
+
+Starts OAuth login.
+
+.Query parameters
+[cols="1,1,3"]
+|===
+|Name |Required |Description
+|`redirect_uri` |yes |Desktop callback or local loopback callback URL.
+|`state` |yes |Client-generated CSRF/state token.
+|===
+
+.Response
+[source,json]
+----
+{
+  "authorization_url": "https://discord.com/oauth2/authorize?...",
+  "state": "client-state"
+}
+----
+
+=== POST /v1/auth/discord/callback
+
+Exchanges a Discord authorization code for an application session.
+
+.Request
+[source,json]
+----
+{
+  "code": "discord-code",
+  "redirect_uri": "http://127.0.0.1:39145/callback",
+  "state": "client-state"
+}
+----
+
+.Response
+[source,json]
+----
+{
+  "access_token": "app-session-token",
+  "expires_at": "2026-05-10T12:00:00Z",
+  "user": {
+    "discord_id": "123456789",
+    "display_name": "ArtistName",
+    "avatar_url": null
+  }
+}
+----
+
+=== GET /v1/me
+
+Returns the authenticated user and upload permissions.
+
+.Headers
+[source]
+----
+Authorization: Bearer <app-session-token>
+----
+
+.Response
+[source,json]
+----
+{
+  "discord_id": "123456789",
+  "display_name": "ArtistName",
+  "can_upload": true,
+  "can_moderate": false,
+  "guild_member": true
+}
+----
+
+== Upload endpoints
+
+=== POST /v1/uploads/preflight
+
+The client sends the manifest before uploading chunks. The server returns which chunks are already known and which are missing.
+
+.Headers
+[source]
+----
+Authorization: Bearer <app-session-token>
+----
+
+.Request
+[source,json]
+----
+{
+  "manifest": {
+    "schema_version": 1,
+    "archive_id": "mcdf_4db2f1c0348aa001",
+    "title": "Example Character",
+    "description": "Short public description",
+    "original_filename": "example.mcdf",
+    "mcdf_hash_blake3": "4db2f1c0348aa001...",
+    "mcdf_size": 12345678,
+    "chunk_size": 8388608,
+    "chunks": [
+      { "index": 0, "hash_blake3": "ab12...", "size": 8388608, "offset": 0 }
+    ],
+    "parity": []
+  }
+}
+----
+
+.Response
+[source,json]
+----
+{
+  "upload_id": "upl_01H...",
+  "archive_id": "mcdf_4db2f1c0348aa001",
+  "known_chunks": ["already-known-hash"],
+  "missing_chunks": [
+    {
+      "index": 0,
+      "hash_blake3": "ab12...",
+      "size": 8388608,
+      "upload_url": "https://example.org/v1/uploads/upl_01H/chunks/ab12..."
+    }
+  ]
+}
+----
+
+=== PUT /v1/uploads/{upload_id}/chunks/{hash_blake3}
+
+Uploads one missing binary chunk. The server verifies the hash before accepting it.
+
+.Headers
+[source]
+----
+Authorization: Bearer <app-session-token>
+Content-Type: application/octet-stream
+----
+
+.Response
+[source,json]
+----
+{
+  "ok": true,
+  "hash_blake3": "ab12...",
+  "size": 8388608,
+  "storage": {
+    "attachment_url": "https://cdn.discordapp.com/attachments/.../chunk_00000.bin",
+    "discord_channel_id": "123",
+    "discord_message_id": "456",
+    "discord_attachment_id": "789"
+  }
+}
+----
+
+=== POST /v1/uploads/{upload_id}/complete
+
+Finalizes the upload and publishes or queues the archive for moderation.
+
+.Headers
+[source]
+----
+Authorization: Bearer <app-session-token>
+----
+
+.Request
+[source,json]
+----
+{
+  "visibility": "public",
+  "tags": ["casual", "avatar"],
+  "consent": {
+    "owns_rights_or_has_permission": true,
+    "allow_public_download": true
+  }
+}
+----
+
+.Response
+[source,json]
+----
+{
+  "archive_id": "mcdf_4db2f1c0348aa001",
+  "state": "published",
+  "manifest_url": "https://example.org/v1/archives/mcdf_4db2f1c0348aa001/manifest"
+}
+----
+
+== Chunk lookup endpoint
+
+=== POST /v1/chunks/lookup
+
+Allows the client or storage worker to ask which chunk hashes already exist.
+
+.Request
+[source,json]
+----
+{
+  "hashes": ["ab12...", "cd34..."]
+}
+----
+
+.Response
+[source,json]
+----
+{
+  "chunks": [
+    {
+      "hash_blake3": "ab12...",
+      "exists": true,
+      "attachment_url": "https://cdn.discordapp.com/attachments/.../chunk_00000.bin"
+    },
+    {
+      "hash_blake3": "cd34...",
+      "exists": false,
+      "attachment_url": null
+    }
+  ]
+}
+----
+
+== Moderation endpoints
+
+These are optional for an admin UI.
+
+* `GET /v1/moderation/queue`
+* `POST /v1/moderation/archives/{archive_id}/approve`
+* `POST /v1/moderation/archives/{archive_id}/reject`
+* `POST /v1/moderation/archives/{archive_id}/hide`
+
+== Error format
+
+All API errors should use the same shape.
+
+[source,json]
+----
+{
+  "error": {
+    "code": "missing_chunk",
+    "message": "Chunk is not available in storage",
+    "details": {}
+  }
+}
+----
+
+== Optional external library-source endpoints
+
+The desktop app can work without these endpoints. External library locations such as Google Drive folders are treated as discovery sources, not as chunk storage backends.
+
+The required file convention for an external source is:
+
+[source,text]
+----
+Example Character.mcdf
+Example Character.png
+----
+
+Supported image extensions are `png`, `jpg`, `jpeg`, and `webp`. The base filename must match the MCDF filename.
+
+=== GET /v1/library/sources
+
+Returns centrally registered external discovery locations. This is optional; the desktop app also stores local user-added locations in `~/.mcdf-marketplace/online-locations.json`.
+
+.Response
+[source,json]
+----
+{
+  "sources": [
+    {
+      "id": "loc_artist_drive",
+      "name": "Artist Drive",
+      "source_type": "google_drive_folder",
+      "url": "https://drive.google.com/drive/folders/...",
+      "enabled": true
+    }
+  ]
+}
+----
+
+=== POST /v1/library/sources/scan
+
+Asks the server to scan a source and return complete MCDF/image pairs. Useful when Drive API keys or provider credentials should not live in the desktop app.
+
+.Request
+[source,json]
+----
+{
+  "source_type": "google_drive_folder",
+  "url": "https://drive.google.com/drive/folders/..."
+}
+----
+
+.Response
+[source,json]
+----
+{
+  "entries": [
+    {
+      "name": "Example Character",
+      "mcdf_file_name": "Example Character.mcdf",
+      "mcdf_url": "https://...",
+      "image_file_name": "Example Character.png",
+      "image_url": "https://...",
+      "can_prepare_for_central": true
+    }
+  ],
+  "orphan_mcdf_files": [],
+  "orphan_image_files": [],
+  "warnings": []
+}
+----
+
+=== POST /v1/library/entries/check
+
+Checks whether external library entries already exist in the central vault. This should compare by known MCDF hash when available, otherwise by external URL and filename.
+
+.Request
+[source,json]
+----
+{
+  "entries": [
+    {
+      "name": "Example Character",
+      "mcdf_url": "https://.../Example%20Character.mcdf",
+      "image_url": "https://.../Example%20Character.png"
+    }
+  ]
+}
+----
+
+.Response
+[source,json]
+----
+{
+  "results": [
+    {
+      "name": "Example Character",
+      "status": "missing",
+      "archive_id": null,
+      "missing_reason": "not_indexed"
+    }
+  ]
+}
+----
+
+Allowed `status` values:
+
+* `exists`
+* `missing`
+* `needs_review`
+* `blocked`
+
+=== POST /v1/library/entries/import
+
+Imports or queues an external MCDF/image pair into the central vault. The server may download the MCDF, chunk it, deduplicate missing chunks, upload missing chunks to Discord storage, and publish a vault manifest.
+
+.Request
+[source,json]
+----
+{
+  "name": "Example Character",
+  "mcdf_url": "https://.../Example%20Character.mcdf",
+  "image_url": "https://.../Example%20Character.png",
+  "source": {
+    "source_type": "google_drive_folder",
+    "url": "https://drive.google.com/drive/folders/..."
+  }
+}
+----
+
+.Response
+[source,json]
+----
+{
+  "status": "queued",
+  "job_id": "job_01HX..."
+}
+----
+
+The desktop app does not require this endpoint. It can already download an online MCDF directly, create a local manifest, chunk it into the local cache, and produce the handoff manifest for later central ingestion.
