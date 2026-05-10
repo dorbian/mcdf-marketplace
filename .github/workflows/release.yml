@@ -87,8 +87,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: src-tauri/target/release/mcdf-marketplace.exe
-          asset_name: MCDF-Marketplace-windows.exe
+          asset_path: src-tauri/target/release/${{ matrix.platform == 'windows-latest' && 'mcdf-marketplace.exe' || 'mcdf-marketplace' }}
+          asset_name: MCDF-Marketplace-${{ matrix.platform == 'windows-latest' && 'windows.exe' || 'linux' }}
           asset_content_type: application/vnd.microsoft.portable-executable
       - name: Upload Windows MSI
         if: matrix.platform == 'windows-latest'
@@ -97,7 +97,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: src-tauri/target/release/bundle/msi/*.msi
+          asset_path: src-tauri/target/release/bundle/msi/MCDF Marketplace_0.1.0_x64_en-US.msi
           asset_name: MCDF-Marketplace-windows.msi
           asset_content_type: application/x-msi
       - name: Upload macOS dmg
@@ -107,7 +107,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          asset_path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/MCDF Marketplace_0.1.0_${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x64' }}.dmg
           asset_name: MCDF-Marketplace-${{ matrix.target }}.dmg
           asset_content_type: application/x-apple-diskimage
       - name: Upload Linux .deb
@@ -117,6 +117,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: src-tauri/target/release/bundle/deb/*.deb
+          asset_path: src-tauri/target/release/bundle/deb/MCDF Marketplace_0.1.0_amd64.deb
           asset_name: MCDF-Marketplace_amd64.deb
           asset_content_type: application/vnd.debian.binary-package
