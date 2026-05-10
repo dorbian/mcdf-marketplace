@@ -7,9 +7,12 @@
 //!   4 bytes: JSON metadata length (little-endian int32)
 //!   N bytes: UTF-8 JSON metadata
 //!   Remaining: binary payload (files concatenated sequentially)
+//!
+//! FFXIV on-disk files may be gzip-compressed; this parser auto-detects and decompresses them.
 
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::Write;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileData {
@@ -70,24 +73,43 @@ impl From<serde_json::Error> for MCDFError {
 pub struct MCDFParser;
 
 impl MCDFParser {
-    /// Parse an MCDF file and return the metadata + binary data
-    pub fn parse<R: Read>(reader: &mut R) -> Result<(MareCharaFileData, Vec<u8>), MCDFError> {
-        // Read magic (4 bytes)
-        let mut magic = [0u8; 4];
-        let n = reader.read(&mut magic).map_err(|e| MCDFError { message: e.to_string() })?;
+    /// Parse an MCDF file, auto-detecting gzip compression used by FFXIV on-disk storage.
+    pub fn parse<R: std::io::Read>(reader: &mut R) -> Result<(MareCharaFileData, Vec<u8>), MCDFError> {
+        // Peek at the first 4 bytes to detect gzip compression
+        let mut peek = [0u8; 4];
+        let n = reader.read(&mut peek).map_err(|e| MCDFError { message: e.to_string() })?;
         if n < 4 {
             return Err(MCDFError { message: format!("File too small ({} bytes)", n) });
         }
 
-        // Check for gzip magic (files may be gzipped)
-        if magic == [0x1f, 0x8b, 0x08, 0x00] || magic == [0x1f, 0x8b, 0x08, 0x08] {
+        // If gzip-compressed (FFXIV stores MCDF gzipped on disk), decompress then parse
+        if &peek == b"\x1f\x8b\x08" {
+            let mut all_data = peek.to_vec();
+            reader.read_to_end(&mut all_data).map_err(|e| MCDFError { message: e.to_string() })?;
+            let mut gz = GzDecoder::new(&all_data[..]);
+            let mut decompressed = Vec::new();
+            gz.read_to_end(&mut decompressed)
+                .map_err(|e| MCDFError { message: format!("gzip decompression failed: {}", e) })?;
+            return Self::parse_from_slice(&decompressed);
+        }
+
+        // Otherwise read rest of file and parse as raw MCDF
+        let mut all_data = peek.to_vec();
+        reader.read_to_end(&mut all_data).map_err(|e| MCDFError { message: e.to_string() })?;
+        Self::parse_from_slice(&all_data)
+    }
+
+    /// Parse from an already-in-memory byte buffer (slice-based, no Read trait needed)
+    fn parse_from_slice(data: &[u8]) -> Result<(MareCharaFileData, Vec<u8>), MCDFError> {
+        if data.len() < 9 {
             return Err(MCDFError {
-                message: "File appears to be gzip-compressed. MCDF files should be decompressed before opening.".to_string(),
+                message: format!("File too small ({} bytes, need at least 9)", data.len()),
             });
         }
 
-
-        if &magic != b"MCDF" {
+        // Magic (4 bytes)
+        let (rest, magic) = data.split_at(4);
+        if magic != b"MCDF" {
             return Err(MCDFError {
                 message: format!(
                     "Invalid magic bytes: {:02x?}{:02x?}{:02x?}{:02x?} (expected 4d434446 'MCDF')",
@@ -96,30 +118,32 @@ impl MCDFParser {
             });
         }
 
-        // Read version (1 byte)
-        let mut version = [0u8; 1];
-        reader.read_exact(&mut version)?;
-        if version[0] != 1 {
+        // Version (1 byte)
+        let version = rest[0];
+        if version != 1 {
             return Err(MCDFError {
-                message: format!("Unsupported version: {}", version[0]),
+                message: format!("Unsupported version: {}", version),
             });
         }
 
-        // Read JSON length (4 bytes, little-endian)
-        let mut json_len_bytes = [0u8; 4];
-        reader.read_exact(&mut json_len_bytes)?;
-        let json_len = u32::from_le_bytes(json_len_bytes) as usize;
+        // JSON length (4 bytes, little-endian)
+        let json_len = u32::from_le_bytes([rest[1], rest[2], rest[3], rest[4]]) as usize;
+        let rest = &rest[5..];
 
-        // Read JSON metadata
-        let mut json_data = vec![0u8; json_len];
-        reader.read_exact(&mut json_data)?;
-        let metadata: MareCharaFileData = serde_json::from_slice(&json_data)?;
+        if rest.len() < json_len {
+            return Err(MCDFError {
+                message: format!(
+                    "File too small (JSON claims {} bytes, {} available)",
+                    json_len,
+                    rest.len()
+                ),
+            });
+        }
 
-        // Read remaining binary payload
-        let mut binary_payload = Vec::new();
-        reader.read_to_end(&mut binary_payload)?;
+        let (json_data, binary_payload) = rest.split_at(json_len);
+        let metadata: MareCharaFileData = serde_json::from_slice(json_data)?;
 
-        Ok((metadata, binary_payload))
+        Ok((metadata, binary_payload.to_vec()))
     }
 
     /// Extract individual files from the binary payload
@@ -133,7 +157,7 @@ impl MCDFParser {
         for file_data in &metadata.files {
             let end = offset + file_data.length as usize;
             if end > binary_payload.len() {
-                break; // Invalid or truncated
+                break;
             }
             let data = binary_payload[offset..end].to_vec();
             files.push(ExtractedFile {
@@ -153,19 +177,15 @@ impl MCDFParser {
         metadata: &MareCharaFileData,
         files_data: &[&[u8]],
     ) -> Result<(), MCDFError> {
-        // Write header
         writer.write_all(b"MCDF")?;
-        writer.write_all(&[1u8])?; // version
+        writer.write_all(&[1u8])?;
 
-        // Serialize JSON
         let json_bytes = serde_json::to_vec(metadata)?;
         let json_len = json_bytes.len() as u32;
 
-        // Write JSON length and JSON data
         writer.write_all(&json_len.to_le_bytes())?;
         writer.write_all(&json_bytes)?;
 
-        // Write binary payload (files concatenated in order)
         for file_data in files_data {
             writer.write_all(file_data)?;
         }
