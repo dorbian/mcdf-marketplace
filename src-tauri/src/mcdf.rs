@@ -55,6 +55,12 @@ pub struct ExtractedFileInfo {
     pub blake3: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedFilePayload {
+    pub info: ExtractedFileInfo,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum MCDFError {
     #[error("I/O error: {0}")]
@@ -178,6 +184,45 @@ impl MCDFParser {
                 hash: file_data.hash.clone(),
                 offset: offset as u64,
                 blake3,
+            });
+            offset = end;
+        }
+
+        Ok(files)
+    }
+
+
+    pub fn extract_file_payloads(
+        metadata: &MareCharaFileData,
+        binary_payload: &[u8],
+    ) -> Result<Vec<ExtractedFilePayload>, MCDFError> {
+        let mut files = Vec::new();
+        let mut offset = 0usize;
+
+        for (index, file_data) in metadata.files.iter().enumerate() {
+            let end = offset
+                .checked_add(file_data.length as usize)
+                .ok_or_else(|| MCDFError::InvalidPayload("file offset overflow".to_string()))?;
+
+            if end > binary_payload.len() {
+                return Err(MCDFError::InvalidPayload(format!(
+                    "file #{index} exceeds payload length: end {end}, payload {}",
+                    binary_payload.len()
+                )));
+            }
+
+            let bytes = binary_payload[offset..end].to_vec();
+            let blake3 = blake3::hash(&bytes).to_hex().to_string();
+            files.push(ExtractedFilePayload {
+                info: ExtractedFileInfo {
+                    index,
+                    game_paths: file_data.game_paths.clone(),
+                    length: file_data.length,
+                    hash: file_data.hash.clone(),
+                    offset: offset as u64,
+                    blake3,
+                },
+                bytes,
             });
             offset = end;
         }

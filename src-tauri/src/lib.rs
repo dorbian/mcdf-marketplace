@@ -1,13 +1,14 @@
 mod commands;
 mod local_cache;
-mod mcdf;
+pub mod mcdf;
 mod online_locations;
 mod vault_manifest;
+pub mod registry_server;
 
 pub use commands::{
-    add_online_location, create_local_manifest, create_manifest_from_online_entry, get_app_version,
+    add_online_location, central_server_health, create_local_manifest, create_manifest_from_online_entry, get_app_version,
     get_cache_dir, inspect_manifest_status, inspect_mcdf_files, list_online_locations, read_manifest, rebuild_from_manifest,
-    remove_online_location, scan_mcdf, scan_online_location, scan_online_locations,
+    remove_online_location, scan_mcdf, scan_online_location, scan_online_locations, upload_mcdf_to_central_server,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -16,6 +17,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             add_online_location,
+            central_server_health,
             create_local_manifest,
             create_manifest_from_online_entry,
             get_app_version,
@@ -29,6 +31,7 @@ pub fn run() {
             scan_mcdf,
             scan_online_location,
             scan_online_locations,
+            upload_mcdf_to_central_server,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

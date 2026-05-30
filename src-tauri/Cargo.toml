@@ -11,6 +11,10 @@ crate-type = ["cdylib", "rlib"]
 name = "mcdf-marketplace"
 path = "src/main.rs"
 
+[[bin]]
+name = "mcdf-registry-server"
+path = "src/server_main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -24,6 +28,9 @@ blake3 = "1"
 flate2 = "1"
 thiserror = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+axum = { version = "0.7", features = ["macros"] }
+clap = { version = "4", features = ["derive", "env"] }
+chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

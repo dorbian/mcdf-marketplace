@@ -5,7 +5,75 @@ use crate::vault_manifest::{self, ManifestBuildResult, ManifestStatus, RebuildRe
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
 use tauri::command;
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CentralServerHealth {
+    pub status: String,
+    pub public_url: String,
+    pub storage_mode: String,
+    pub ghcr_configured: bool,
+    pub uploads_require_auth: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CentralUploadResponse {
+    pub package_hash_blake3: String,
+    pub package_size: u64,
+    pub file_count: usize,
+    pub archived_file_count: usize,
+    pub deduplicated_file_count: usize,
+    pub manifest_url: String,
+    pub download_url: String,
+    pub storage_mode: String,
+    pub notes: Vec<String>,
+}
+
+#[command]
+pub fn central_server_health(server_url: String) -> Result<CentralServerHealth, String> {
+    let url = format!("{}/v1/health", server_url.trim_end_matches('/'));
+    let response = reqwest::blocking::get(url).map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("central server health check failed: HTTP {}", response.status()));
+    }
+    response.json::<CentralServerHealth>().map_err(|error| error.to_string())
+}
+
+#[command]
+pub fn upload_mcdf_to_central_server(
+    path: String,
+    server_url: String,
+    bearer_token: Option<String>,
+) -> Result<CentralUploadResponse, String> {
+    let path_buf = PathBuf::from(&path);
+    let bytes = std::fs::read(&path_buf).map_err(|error| error.to_string())?;
+    let filename = path_buf
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("upload.mcdf")
+        .to_string();
+
+    let client = reqwest::blocking::Client::new();
+    let mut request = client
+        .post(format!("{}/v1/packages/upload", server_url.trim_end_matches('/')))
+        .header("content-type", "application/octet-stream")
+        .header("x-mcdf-filename", filename)
+        .body(bytes);
+
+    if let Some(token) = bearer_token.filter(|value| !value.trim().is_empty()) {
+        request = request.bearer_auth(token);
+    }
+
+    let response = request.send().map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_else(|_| "<unreadable response body>".to_string());
+        return Err(format!("central server upload failed: HTTP {status}: {body}"));
+    }
+    response.json::<CentralUploadResponse>().map_err(|error| error.to_string())
+}
 
 #[command]
 pub fn scan_mcdf(path: String) -> Result<MareCharaFileData, String> {

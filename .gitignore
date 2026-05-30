@@ -5,3 +5,7 @@ src-tauri/target/
 *.log
 .env
 .env.*
+
+# Local MCDF central registry test data
+mcdf-registry-data/
+.local-mcdf-registry-test/

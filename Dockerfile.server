@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+FROM rust:1-bookworm AS build
+WORKDIR /src
+COPY src-tauri ./src-tauri
+WORKDIR /src/src-tauri
+RUN cargo build --release --bin mcdf-registry-server
+
+FROM debian:bookworm-slim
+RUN useradd --system --create-home --home-dir /var/lib/mcdf mcdf \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/src-tauri/target/release/mcdf-registry-server /usr/local/bin/mcdf-registry-server
+USER mcdf
+WORKDIR /var/lib/mcdf
+EXPOSE 8080
+ENV MCDF_SERVER_BIND=0.0.0.0:8080 \
+    MCDF_PUBLIC_URL=http://127.0.0.1:8080 \
+    MCDF_DATA_DIR=/var/lib/mcdf/data \
+    MCDF_STORAGE_MODE=local
+ENTRYPOINT ["mcdf-registry-server"]

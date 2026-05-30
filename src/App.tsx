@@ -117,6 +117,24 @@ type OnlineLocationScanResult = {
   orphan_image_files: OnlineFileRef[];
   warnings: string[];
 };
+type CentralServerHealth = {
+  status: string;
+  public_url: string;
+  storage_mode: string;
+  ghcr_configured: boolean;
+  uploads_require_auth: boolean;
+};
+type CentralUploadResponse = {
+  package_hash_blake3: string;
+  package_size: number;
+  file_count: number;
+  archived_file_count: number;
+  deduplicated_file_count: number;
+  manifest_url: string;
+  download_url: string;
+  storage_mode: string;
+  notes: string[];
+};
 
 type FileLike = ExtractedFileInfo | ComponentAvailability | ManifestMcdfFile;
 
@@ -770,18 +788,85 @@ function InspectPanel() {
 
 function SettingsPanel() {
   const [cacheDir, setCacheDir] = useState("loading…");
+  const [serverUrl, setServerUrl] = useState("http://127.0.0.1:8080");
+  const [serverToken, setServerToken] = useState("");
+  const [serverHealth, setServerHealth] = useState<CentralServerHealth | null>(null);
+  const [uploadResult, setUploadResult] = useState<CentralUploadResponse | null>(null);
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [serverLoading, setServerLoading] = useState(false);
   useEffect(() => { invoke<string>("get_cache_dir").then(setCacheDir).catch((e) => setCacheDir(String(e))); }, []);
+
+  const testServer = async () => {
+    setServerLoading(true);
+    setServerError(null);
+    setServerHealth(null);
+    try {
+      setServerHealth(await invoke<CentralServerHealth>("central_server_health", { serverUrl }));
+    } catch (e) {
+      setServerError(String(e));
+    } finally {
+      setServerLoading(false);
+    }
+  };
+
+  const uploadTestMcdf = async () => {
+    const selected = await open({ multiple: false, filters: [{ name: "MCDF", extensions: ["mcdf"] }] });
+    if (!selected) return;
+    setServerLoading(true);
+    setServerError(null);
+    setUploadResult(null);
+    try {
+      setUploadResult(await invoke<CentralUploadResponse>("upload_mcdf_to_central_server", {
+        path: selected,
+        serverUrl,
+        bearerToken: serverToken.trim() || null,
+      }));
+    } catch (e) {
+      setServerError(String(e));
+    } finally {
+      setServerLoading(false);
+    }
+  };
+
   return (
     <div className="settings-screen">
       <Panel className="hero-copy">
         <div className="eyebrow">Local settings</div>
-        <h1>Cache and build details</h1>
-        <p>The browser stays local-first. Server endpoints are optional; direct manifest rebuilds still work when chunks are cached or have direct URLs.</p>
+        <h1>Cache, server, and build details</h1>
+        <p>The browser stays local-first, but can publish through a central MCDF registry server. The server owns the GitHub/GHCR token; the client only receives friendly package, file, and rebuild status.</p>
       </Panel>
       <Panel>
         <div className="eyebrow">Local cache directory</div>
         <div className="path-block">{cacheDir}</div>
         <p>Override with <span className="inline-code">MCDF_MARKETPLACE_HOME</span> when testing builds or CI behavior.</p>
+      </Panel>
+      <Panel>
+        <div className="panel-title-row">
+          <div><div className="eyebrow">Central registry server</div><h2>Upload through mcdf.thebigtree.life or a local test server</h2></div>
+          <span className={serverHealth?.status === "healthy" ? "status-pill status-good" : "status-pill status-neutral"}>{serverHealth?.status ?? "not checked"}</span>
+        </div>
+        <div className="form-grid library-form">
+          <Field value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} placeholder="https://mcdf.thebigtree.life" />
+          <Field value={serverToken} onChange={(e) => setServerToken(e.target.value)} placeholder="Optional upload token for local/protected servers" />
+        </div>
+        <div className="hero-actions">
+          <GhostButton disabled={serverLoading || !serverUrl.trim()} onClick={testServer}>{serverLoading ? "Checking…" : "Check server"}</GhostButton>
+          <PrimaryButton disabled={serverLoading || !serverUrl.trim()} onClick={uploadTestMcdf}>Upload test MCDF</PrimaryButton>
+        </div>
+        <ErrorBox error={serverError} />
+        {serverHealth && (
+          <div className="source-list">
+            <div className="source-row"><div><strong>{serverHealth.public_url}</strong><span>{serverHealth.storage_mode.replace(/_/g, " ")} · GHCR {serverHealth.ghcr_configured ? "configured" : "not configured"}</span><code>Uploads {serverHealth.uploads_require_auth ? "require a bearer token" : "are open on this server"}</code></div></div>
+          </div>
+        )}
+        {uploadResult && (
+          <SuccessBox>
+            <div className="font-semibold">MCDF archived as extracted full files</div>
+            <div className="mt-2">{uploadResult.file_count} files archived, {uploadResult.deduplicated_file_count} already existed.</div>
+            <div className="mt-2 font-mono text-xs">{uploadResult.manifest_url}</div>
+            <div className="mt-2 font-mono text-xs">{uploadResult.download_url}</div>
+          </SuccessBox>
+        )}
       </Panel>
     </div>
   );
