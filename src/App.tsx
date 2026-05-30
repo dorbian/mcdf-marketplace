@@ -833,7 +833,7 @@ function SettingsPanel() {
       <Panel className="hero-copy">
         <div className="eyebrow">Local settings</div>
         <h1>Cache, server, and build details</h1>
-        <p>The browser stays local-first, but can publish through a central MCDF registry server. The server owns the GitHub/GHCR token; the client only receives friendly package, file, and rebuild status.</p>
+        <p>The browser stays local-first, but can publish through the TheBigTree archive service. Registry details stay behind the service; the client only receives friendly package, file, and rebuild status.</p>
       </Panel>
       <Panel>
         <div className="eyebrow">Local cache directory</div>
@@ -842,12 +842,12 @@ function SettingsPanel() {
       </Panel>
       <Panel>
         <div className="panel-title-row">
-          <div><div className="eyebrow">Central registry server</div><h2>Upload through mcdf.thebigtree.life or a local test server</h2></div>
+          <div><div className="eyebrow">TheBigTree archive service</div><h2>Upload through mcdf.thebigtree.life</h2></div>
           <span className={serverHealth?.status === "healthy" ? "status-pill status-good" : "status-pill status-neutral"}>{serverHealth?.status ?? "not checked"}</span>
         </div>
         <div className="form-grid library-form">
           <Field value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} placeholder="https://mcdf.thebigtree.life" />
-          <Field value={serverToken} onChange={(e) => setServerToken(e.target.value)} placeholder="Optional upload token for local/protected servers" />
+          <Field value={serverToken} onChange={(e) => setServerToken(e.target.value)} placeholder="Optional upload token" />
         </div>
         <div className="hero-actions">
           <GhostButton disabled={serverLoading || !serverUrl.trim()} onClick={testServer}>{serverLoading ? "Checking…" : "Check server"}</GhostButton>
@@ -856,7 +856,7 @@ function SettingsPanel() {
         <ErrorBox error={serverError} />
         {serverHealth && (
           <div className="source-list">
-            <div className="source-row"><div><strong>{serverHealth.public_url}</strong><span>{serverHealth.storage_mode.replace(/_/g, " ")} · GHCR {serverHealth.ghcr_configured ? "configured" : "not configured"}</span><code>Uploads {serverHealth.uploads_require_auth ? "require a bearer token" : "are open on this server"}</code></div></div>
+            <div className="source-row"><div><strong>{serverHealth.public_url}</strong><span>{serverHealth.storage_mode.replace(/_/g, " ")} archive</span><code>Uploads {serverHealth.uploads_require_auth ? "require an upload token" : "are available"}</code></div></div>
           </div>
         )}
         {uploadResult && (

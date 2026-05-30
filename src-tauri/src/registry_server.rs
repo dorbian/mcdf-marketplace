@@ -349,11 +349,11 @@ async fn upload_package(
 
         file_records.push(RegistryFileRecord {
             index: payload.info.index,
-            game_paths: payload.info.game_paths,
+            game_paths: payload.info.game_paths.clone(),
             length: payload.info.length,
-            mcdf_hash: payload.info.hash,
+            mcdf_hash: payload.info.hash.clone(),
             payload_offset: payload.info.offset,
-            payload_blake3: payload.info.blake3,
+            payload_blake3: payload.info.blake3.clone(),
             media_type: guess_media_type_from_paths(&payload.info.game_paths),
             artifact,
         });

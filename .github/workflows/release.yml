@@ -167,7 +167,7 @@ jobs:
 
       - name: Build registry server
         working-directory: src-tauri
-        run: cargo build --release --bin mcdf-registry-server --target ${{ matrix.target }}
+        run: cargo build --release --no-default-features --bin mcdf-registry-server --target ${{ matrix.target }}
 
       - name: Stage registry server binary
         shell: bash
@@ -179,9 +179,9 @@ jobs:
             BIN="${BIN}.exe"
           fi
           cp "${BIN}" server-dist/
-          cp README.md server-dist/README.md
-          cp docs/CENTRAL_REGISTRY_SERVER.adoc server-dist/CENTRAL_REGISTRY_SERVER.adoc
-          cp scripts/local-server-e2e.sh server-dist/local-server-e2e.sh
+          # Intentionally package only the server binary. The registry server is operated
+          # as a controlled TheBigTree service; public release assets should not include
+          # setup or self-hosting documentation.
 
       - name: Package registry server
         shell: bash
