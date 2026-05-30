@@ -16,10 +16,10 @@ name = "mcdf-registry-server"
 path = "src/server_main.rs"
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.6.2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["devtools"], optional = true }
+tauri = { version = "2.6.2", features = ["devtools"], optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
