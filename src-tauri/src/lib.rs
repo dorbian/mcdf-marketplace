@@ -3,7 +3,6 @@ mod local_cache;
 pub mod mcdf;
 mod online_locations;
 mod vault_manifest;
-pub mod registry_server;
 
 pub use commands::{
     add_online_location, central_server_health, create_local_manifest, create_manifest_from_online_entry, get_app_version,

@@ -166,15 +166,15 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build registry server
-        working-directory: src-tauri
-        run: cargo build --release --no-default-features --bin mcdf-registry-server --target ${{ matrix.target }}
+        working-directory: registry-server
+        run: cargo build --release --bin mcdf-registry-server --target ${{ matrix.target }}
 
       - name: Stage registry server binary
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p server-dist
-          BIN="src-tauri/target/${{ matrix.target }}/release/mcdf-registry-server"
+          BIN="registry-server/target/${{ matrix.target }}/release/mcdf-registry-server"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             BIN="${BIN}.exe"
           fi
